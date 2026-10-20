@@ -1,0 +1,34 @@
+node_modules/
+dist/
+data/
+.env
+.env.*
+!.env.example
+config/local.yaml
+*.log
+.dsh-acl-out/
+
+# 敏感：临时令牌/凭据文件
+.token.tmp
+*.tmp
+token*.json
+
+# 一次性运维脚本（含账号相关数据，不入库）
+restore-stickers.mjs
+set-blocklist.mjs
+clean-stickers.mjs
+list-stickers.mjs
+check-*.mjs
+read-logs.mjs
+reset-mood.mjs
+check-again.mjs
+
+# 本地运行产物
+qr-*.png
+outputs/
+
+# 编辑器/系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

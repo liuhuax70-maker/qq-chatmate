@@ -1,0 +1,391 @@
+# qq-netizen 默认配置
+# 场景：纯私聊陪伴（不接入任何群聊）
+# 优先级：环境变量 > config/local.yaml > config/default.yaml
+# 所有 ${VAR} 形式的值从进程环境变量读取，未设置时该配置项视为缺失并报错。
+
+app:
+  name: qq-netizen
+  env: development
+  # 场景锁定。private-only 时所有群聊事件一律丢弃，
+  # 且 proactive 的群级闸门自动失效。
+  scenario: private-only
+
+# ── 接入层 ────────────────────────────────────────────────
+adapter:
+  type: onebot11
+  # reverse-websocket：本程序起 WS 服务端（8080），协议端 Lagrange.OneBot 主动连过来。
+  #   这对应 Lagrange 配置里的 "ReverseWebSocket"。
+  # forward-websocket：本程序作为客户端连协议端，需填 url。
+  transport: reverse-websocket
+  listen:
+    host: 127.0.0.1
+    port: 8080
+    path: /onebot/v11/ws
+  url:                       # 仅 forward-websocket 用，如 ws://127.0.0.1:8081
+  accessToken: ${ONEBOT_ACCESS_TOKEN}
+  selfId: ${ONEBOT_SELF_ID}
+  heartbeatIntervalMs: 30000
+
+# ── 消息管线 ──────────────────────────────────────────────
+pipeline:
+  # 分片合并：真人说话是断断续续的，等一个"静默期"再统一回复。
+  #
+  # 关键设计（改过一次）：
+  #   原来固定等 1.5 秒就到点发送 —— 你要是说得慢一点，一句话会被拆成两次对话，
+  #   她第一次没听全，第二次又不知道你在说同一件事。
+  #   现在：每来一条新消息就重新计时（续期），但总等待不超过 mergeMaxWaitMs。
+  #   这样"慢慢说完一件事"会被合并成一次处理。
+  # 1.2 秒静默期：足够把"说话断断续续"合并成一次，
+  # 又不会让你干等。mergeMaxWaitMs 是硬上限，防止极端情况卡死。
+  mergeWindowMs: 1200
+  mergeMaxWaitMs: 6000
+  dedup:
+    enabled: true
+    windowMs: 5000
+  filter:
+    # 纯私聊：只放行这一个 QQ 号，其他所有人的私聊一律不回。
+    # 空数组 = 拒绝所有私聊（安全默认）。
+    # ⚠️ 这是【应用层】过滤，不是 QQ 平台限制。
+    #    别人依然能加好友、能发消息、能把机器人拉进群，
+    #    拦截发生在程序内部。必须配合下方 guard 段一起用。
+    allowedUsers: ["${OWNER_QQ}"]
+    blockedUsers: []
+    dropSelf: true
+    dropGroupEvents: true        # scenario=private-only 时强制生效
+
+# ── 接触面防护 ────────────────────────────────────────────
+# ⚠️ 重要：私聊白名单只是第一道门，不是唯一一道。
+# QQ 本身不拦任何人加好友、不拦任何人拉群。
+# 真正把接触面收窄的，是"机器人自己对这些事件做出反应"。
+#
+# 完整防护是四层，缺一不可：
+#   ① QQ 隐私设置（人工配置，见 docs/contact-surface.md）
+#   ② 本节的自动处理（机器人在协议层主动拒绝/退出）
+#   ③ pipeline.filter 白名单（应用层丢弃）
+#   ④ 日志告警（发现异常接触面扩张时通知你）
+guard:
+  # 好友请求：非白名单一律拒绝
+  # 用 OneBot 11 的 set_friend_add_request，flag 来自 request 事件
+  friendRequest:
+    autoReject: true
+    # 留空 = 不回复理由（不回复比回复"不发"更少暴露机器人特征）
+    rejectReason: ""
+    # 白名单里的人申请加好友 → 自动同意
+    autoAcceptWhitelisted: true
+
+  # 被拉进群：立即退群
+  # 监听 notice 事件 sub_type=invite，用 set_group_leave
+  groupInvite:
+    autoLeave: true
+    # 延迟退群（毫秒）。0 = 立刻退，避免被当成正常群成员
+    leaveDelayMs: 0
+    # 退群前是否发一句说明。false = 悄悄退，暴露更少
+    announceOnLeave: false
+
+  # 邀请入群请求（需要管理员确认的那种）：一律拒绝
+  groupRequest:
+    autoReject: true
+
+  # 非白名单私聊消息：丢弃，且**不记入任何上下文**
+  # 关键：不能只"不回复"，还要不污染记忆、不触发 LLM 调用
+  unknownPrivate:
+    action: drop              # drop = 直接丢弃，不进管线
+    skipLLM: true             # 绝不为此调用模型（省 token，也避免留痕）
+    escalateAfterN: 1         # 第 1 次就记 alert 级日志
+
+  # 群消息：即使 filter 配置被改错，这里再做一次硬校验
+  groupMessages:
+    action: drop-and-warn
+
+  # 告警：接触面出现异常时通知你
+  alert:
+    enabled: true
+    # 通过管理接口推送到 /healthz 的 status 字段 + 日志 alert 级
+    onUnknownPrivate: true
+    onGroupJoin: true
+    onFriendRequest: true
+
+# ── 会话 ──────────────────────────────────────────────────
+session:
+  # 私聊是单会话长生命周期，短期上下文可以比群聊给得宽一些
+  shortTermLimit: 60
+  contextMaxTokens: 4000
+  lockTimeoutMs: 60000
+  persistIntervalMs: 30000
+
+# ── 人格 ──────────────────────────────────────────────────
+persona:
+  default: default
+  dir: config/personas
+  moodDecayPerHour: 0.15
+  moodFloor: -0.6
+  moodCeiling: 0.6
+  # 私聊专属：关系亲密度，随交互累积，影响说话方式的熟稔程度
+  intimacy:
+    enabled: true
+    perExchange: 0.02           # 每轮对话增长
+    decayPerDay: 0.05           # 超过 7 天不说话开始衰减
+    decayAfterDays: 7
+    max: 1.0
+
+# ── LLM ───────────────────────────────────────────────────
+llm:
+  provider: deepseek
+  baseURL: https://api.deepseek.com
+  apiKey: ${DEEPSEEK_API_KEY}
+  model: deepseek-chat
+  temperature: 0.85            # 高一点，避免回复过于规整像客服
+  topP: 0.95
+  maxTokens: 300               # 短回复，防长文
+  timeoutMs: 30000
+  retries: 1
+  retryDelayMs: 2000
+  maxConcurrent: 2
+  requestsPerMinute: 20
+
+# ── 记忆 ──────────────────────────────────────────────────
+# 私聊场景下，记忆系统从"可选增强"升级为"核心价值"。
+# 失忆一次，人设就崩一次。
+memory:
+  enabled: true
+  db:
+    path: data/qq-netizen.db
+  vector:
+    enabled: true
+    path: data/vectors
+    embedding:
+      provider: openai-compatible
+      baseURL: ${EMBEDDING_BASE_URL}   # 例：http://127.0.0.1:11434/v1（Ollama）
+      apiKey: ${EMBEDDING_API_KEY}
+      model: BAAI/bge-m3
+      dimensions: 1024
+  longTerm:
+    topK: 5                    # 私聊比群聊检索更多，上下文更聚焦
+    importanceThreshold: 0.25  # 私聊里随口说的话也值得记，阈值放宽
+    ttlDays: 365               # 长期陪伴，记忆保留一年
+    extractEveryNTurns: 8      # 更频繁地抽取
+    explicitKeywords:
+      - 记住
+      - 别忘了
+      - 下次
+      - 约好
+      - 说好了
+      - 帮我记
+  # 会话摘要：短期上下文被顶掉后，靠摘要保持连续性
+  summary:
+    enabled: true
+    triggerAtTurns: 30         # 每 30 轮滚动生成一次
+    maxSummaryChars: 500
+
+# ── 回复生成与发送 ────────────────────────────────────────
+responder:
+  # 打字延迟：让人看起来在敲键盘。私聊里这条就是"她在认真回你"的全部依据
+  # perCharMs 40 → 25：30 字的回复从 2.0s 降到 1.55s，
+  # 仍然有"在打字"的实感，但不会等得不耐烦。
+  typing:
+    baseMs: 500
+    perCharMs: 25
+    jitter: 0.3
+    maxMs: 5000
+  # 分段发送：长回复拆多条发，中间停顿
+  # pauseMs 800-2500 → 400-1200：分三条时总停顿从 1.6-5s 降到 0.8-2.4s，
+  # 保持"低头打字"的节奏感，不拖沓。
+  split:
+    enabled: true
+    minCharsToSplit: 60
+    maxCharsPerMessage: 60
+    pauseMsMin: 400
+    pauseMsMax: 1200
+  typo:
+    enabled: true
+    probability: 0.05
+  # 消息长度
+  # 总长上限。150 字能撑起"两条有内容的回复"，
+  # 再长就会拆成三条以上像刷屏。超限会触发重写，所以别设太小。
+  maxChars: 150
+
+  # 收藏表情包
+  # 从机器人号「我的收藏」里拉取（OneBot fetch_custom_face），
+  # 短回复后面附加一张，作为独立消息发送——像真人打完字补个图。
+  sticker:
+    enabled: true
+    # 附加概率。太高会显得每句都在发表情。
+    probability: 0.25
+
+  # 语音回复：短句偶尔用 GPT-SoVITS 合成一条语音（替代打字，而非附加）
+  # 合成在 CPU 上约 5-7 秒（回复时长约 3 秒），所以只对短句、低概率触发，
+  # 避免每条都慢半拍、也避免 CPU 长时间满载。
+  voice:
+    enabled: true
+    # 触发概率（仅对 maxChars 以内的短回复生效）
+    probability: 0.15
+    # 只对不超过这个字数的回复发语音
+    maxChars: 15
+    # GPT-SoVITS HTTP 服务地址（tts_server.py，默认端口 9880）
+    serverUrl: http://127.0.0.1:9880
+    timeoutMs: 60000
+    # 语速因子：1.0 参考音频原速（偏慢，一句话能拖到 10+ 秒），
+    # 1.3 起跳到正常语速（短句约 2.5-3 秒），信息密度自然。
+    speed: 1.3
+    # 合成失败是否回退为文字（true = 回退，保证有回复）
+    fallbackToText: true
+
+# ── 连发节流 ──────────────────────────────────────────────
+# 私聊场景下的"该不该闭嘴"：对方连发多条时，不要每条都回。
+#
+# 设计演进记录：
+#   第一版用「60秒内回3次后 40% 概率不回」——实测几乎不生效。
+#   原因是概率是软的：聊得越起劲，回得越密，这时候最该闭嘴，反而最容易突破。
+#   改成「硬上限 + 冷却」：超了就真的不回，直到窗口滑过去。
+throttle:
+  # ── 硬上限：窗口内回复次数到顶就直接静默 ──
+  burstWindowSeconds: 45       # 统计窗口
+  burstMaxReplies: 2           # 45 秒内最多回 2 次，第 3 次开始不回
+  burstSkipProbability: 1.0    # 1.0 = 硬性不回（要软化可调低）
+
+  # ── 刷屏检测：短时间大量消息，直接哑火 ──
+  floodWindowSeconds: 10
+  floodThreshold: 5            # 10 秒内超过 5 条视为刷屏
+  floodSkipProbability: 1.0    # 刷屏时一律不回
+
+  # ── 静默期后恢复 ──
+  # 触发节流后，至少沉默这么久再恢复回复，避免“刚闭嘴又立刻开口”
+  cooldownAfterSkipSeconds: 20
+
+# ── 主动开口 ──────────────────────────────────────────────
+# 私聊场景重定义为"惦记"：不是搭话，是她想起了某件事。
+# 这一项做不好会从"陪伴"变成"骚扰"，所有闸门都收紧。
+proactive:
+  enabled: true
+  # 深夜禁言：这个区间内绝不主动开口（除了晚安，晚安有独立窗口）
+  # ⚠️ 必须 <= 早安最早时间(6)，且不能盖住晚安窗口(0-2)
+  quietHours: [2, 6]
+  maxPerDay: 2
+  maxPerHour: 1
+  minGapMinutes: 120           # 两次主动开口最小间隔
+  # ⚠️ 关键：被无视后的退避。不理她，她下次就隔更久才开口
+  ignoreBackoff:
+    enabled: true
+    factor: 2                  # 被无视一次，等待时间翻倍
+    maxMultiplier: 8           # 最多等 8 倍基础间隔
+    resetAfterReply: true      # 一回复就恢复正常频率
+
+  triggers:
+    # 你有一阵没说话了，她忍不住开口
+    silence:
+      enabled: true
+      idleHours: 6              # 静默 6 小时后才考虑
+      probability: 0.3
+      topicsFile: config/proactive-topics.yaml
+
+    # ── 主动分享发现 ──────────────────────────────────────
+    # 她想起一件有意思的事/小发现，主动讲给你听。
+    # 内容来自本地话题库 + 你们之间的长期记忆。
+    share:
+      enabled: true
+      idleHours: 4              # 静默 4 小时后才考虑（比冷场更早，因为她想分享）
+      probability: 0.35         # 每小时检查时触发概率（受全局 minGapMinutes 约束）
+      topicsFile: config/proactive-topics.yaml
+      fromMemory: true          # 是否从记忆里提炼"你最近提过的事"
+
+    # ── 主动关心询问 ──────────────────────────────────────
+    # 她惦记你，主动问一句/关心一下。语气傲娇与直接混合。
+    care:
+      enabled: true
+      idleHours: 5              # 静默 5 小时后才考虑
+      probability: 0.4
+      fromMemory: true          # 优先接着你之前提过的事来关心
+
+    # ── 早安 / 晚安 ──────────────────────────────────────
+    # 不是定时打卡。她有自己的作息，起床时间每天随机浮动。
+    # 只有「她醒着 + 你也在线/刚醒 + 这次该发」三个条件都满足才开口。
+    morning:
+      enabled: true
+      # 起床时间窗口（小时）：每天在这个区间里随机挑一个点
+      wakeWindow: [7, 8]
+      # 熬夜的话会晚起，这个概率让她偶尔拖到中午
+      lateWake:
+        probability: 0.2
+        window: [9, 12]
+      # 起床后多久才发（分钟），避免"整点卡点"
+      delayMinutes: [5, 40]
+      # 当天不发早安的几率（别天天发，保持自然）
+      skipProbability: 0.25
+      # 连续不理她，暂停早安
+      pauseAfterIgnores: 2
+      pauseDays: 3
+
+    night:
+      enabled: true
+      # 道晚安的时间窗口：23:00 - 24:00 之间随机一个点
+      # 支持跨零点区间（start > end 时表示跨天）
+      sleepWindow: [23, 24]
+      # 晚安之后还有一段"半睡半醒"的缓冲期，这段时间仍会回消息
+      awakeAfterGoodnightMinutes: 30
+      # 缓冲期结束后进入睡眠：不再主动回复
+      hardSleep: true
+      # ⚠️ 睡眠不是"死机"：半夜被吵醒是可以的，但你要付出代价。
+      # 被吵醒后需要这么久才能真的回你（分钟区间）——起床需要时间。
+      wakeUpDelayMinutes: [2, 8]
+      # 被吵醒后能聊多久，之后重新睡着（分钟）
+      stayAwakeMinutes: 15
+      # 睡醒后是否提起昨晚的消息
+      mentionNightMessages:
+        enabled: true
+        # 只提"晚安后 30 分钟以外"发的那些（缓冲期内的消息已经正常处理过了）
+      # 问候发出后你多久没回，她会撒娇催一下（分钟）。0 = 不撒娇
+      teaseAfterIgnoredMinutes: 20
+      skipProbability: 0.15
+      pauseAfterIgnores: 2
+      pauseDays: 3
+
+    # 约定到期提醒
+    promise:
+      enabled: true
+      horizonHours: 24
+
+  # 内容安全闸
+  safety:
+    maxChars: 60
+    forbiddenTopics:
+      - 政治
+      - 宗教
+      - 色情
+      - 暴恐
+      - 广告
+      - 转账
+      - 链接
+    forbidMention: true
+
+# ── 基础设施 ──────────────────────────────────────────────
+infra:
+  log:
+    level: info
+    pretty: true
+    maskQQ: true               # 日志里 QQ 号打码
+  server:
+    host: 127.0.0.1            # 管理接口只监听本地
+    port: 3000
+    authToken: ${ADMIN_TOKEN}
+  metrics:
+    enabled: true
+
+# ── 控制面板 ──────────────────────────────────────────────
+# 本地可视化面板（http://127.0.0.1:3000/panel）：监控 + 启停各组件。
+# 这些路径只在面板「启动/停止」按钮里用，主程序本身不依赖它们。
+control:
+  tts:
+    # GPT-SoVITS 的 venv python 与入口脚本
+    python: D:/Agent/HarnessWorkPlace/Deepseek/tts-env/venv/Scripts/python.exe
+    script: D:/Agent/HarnessWorkPlace/Deepseek/gpt-sovits/tts_server.py
+    workdir: D:/Agent/HarnessWorkPlace/Deepseek/gpt-sovits
+    port: 9880
+  lagrange:
+    # 协议端可执行文件与其工作目录（publish 目录）
+    exe: D:/Agent/HarnessWorkPlace/Deepseek/lagrange/Lagrange.OneBot/bin/Release/net9.0/win-x64/publish/Lagrange.OneBot.exe
+    workdir: D:/Agent/HarnessWorkPlace/Deepseek/lagrange/Lagrange.OneBot/bin/Release/net9.0/win-x64/publish
+    # 自包含 .NET 解压目录，避免每次解压到临时目录
+    bundleExtractBase: D:/Agent/HarnessWorkPlace/Deepseek/lagrange/dotnet-tmp
+  signServer:
+    container: ntqq-sign-server
+    port: 8090

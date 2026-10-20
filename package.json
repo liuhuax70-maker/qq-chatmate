@@ -1,0 +1,37 @@
+{
+  "name": "qq-netizen",
+  "version": "0.1.0",
+  "private": true,
+  "description": "QQ 网友接入程序：一个只跟你私聊的 AI 网友",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx tests/smoke.ts",
+    "test:emoji": "tsx tests/emoji.ts",
+    "test:sleep": "tsx tests/sleep.ts",
+    "test:split": "tsx tests/split.ts",
+    "test:stickers": "tsx tests/stickers.ts",
+    "cost": "tsx tests/cost.ts",
+    "check:llm": "tsx tests/check-llm.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "dotenv": "^16.4.7",
+    "openai": "^4.77.0",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "ws": "^8.18.0",
+    "yaml": "^2.7.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
