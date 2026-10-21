@@ -32,3 +32,6 @@ outputs/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 启动器构建产物（用 launcher/build.bat 生成）
+launcher/*.exe
