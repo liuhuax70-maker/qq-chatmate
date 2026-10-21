@@ -238,7 +238,15 @@ async function main(): Promise<void> {
       // 触发：你要求她唱，或她自己想唱。
       // 不是真唱——是用她的音色有节奏地把歌词念出来。
       const wantSong = tts.shouldSing(text, processed.text);
-      if (wantSong) {
+      const wantVoice = !wantSong && singleSeg && !hasEmojiMarker && tts.shouldVoice(singleSeg);
+      // 只有在真的要发语音/唱歌时，才做一次秒级探测。
+      // TTS 没启动的话直接跳过，避免傻等 60 秒超时。
+      const ttsReady = (wantSong || wantVoice) ? await tts.isServerReady() : false;
+      if ((wantSong || wantVoice) && !ttsReady) {
+        logger.warn('TTS 服务不可用，本次不发语音');
+      }
+
+      if (wantSong && ttsReady) {
         voiceAttempted = true;
         const lyrics = extractLyrics(processed.text);
         if (lyrics.length > 0) {
@@ -263,7 +271,7 @@ async function main(): Promise<void> {
       }
 
       // ── 普通语音 ─────────────────────────────────────────
-      if (!voiced && singleSeg && !hasEmojiMarker && tts.shouldVoice(singleSeg)) {
+      if (!voiced && ttsReady && wantVoice) {
         voiceAttempted = true;
         logger.info({ chars: singleSeg.length }, '触发语音回复');
         const t0 = Date.now();

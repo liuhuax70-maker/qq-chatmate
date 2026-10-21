@@ -117,6 +117,29 @@ export class TtsClient {
     return this.cfg.fallbackToText;
   }
 
+  /**
+   * 快速探测 TTS 服务是否在线（1 秒超时）。
+   *
+   * 为什么需要：TTS 没启动时，合成请求会一直等到 timeoutMs（60 秒）
+   * 才失败，用户在那边干等一分钟才收到文字回复。
+   * 触发语音前先用这个做一次秒级探测，不可用就直接跳过语音。
+   */
+  async isServerReady(): Promise<boolean> {
+    if (!this.cfg.enabled) return false;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 1000);
+      try {
+        const resp = await fetch(`${this.cfg.serverUrl}/health`, { signal: ctrl.signal });
+        return resp.ok;
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      return false;
+    }
+  }
+
   /** 这条回复该不该发语音（短句 + 概率） */
   shouldVoice(text: string): boolean {
     if (!this.cfg.enabled) return false;
