@@ -667,7 +667,7 @@ namespace QQChatmateLauncher
         public LauncherForm()
         {
             Text = "鲸奈 · QQ 网友 启动器";
-            ClientSize = new Size(560, 760);
+            ClientSize = new Size(560, 820);
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = BgColor;
             ForeColor = TextColor;
@@ -781,7 +781,7 @@ namespace QQChatmateLauncher
             var qrPanel = new Panel
             {
                 Location = new Point(20, y + 118),
-                Size = new Size(504, 230),
+                Size = new Size(504, 290),
                 BackColor = CardColor
             };
             Controls.Add(qrPanel);
@@ -797,8 +797,8 @@ namespace QQChatmateLauncher
 
             _qrBox = new PictureBox
             {
-                Location = new Point(170, 34),
-                Size = new Size(160, 160),
+                Location = new Point(140, 32),
+                Size = new Size(220, 220),
                 SizeMode = PictureBoxSizeMode.Zoom,
                 BackColor = Color.FromArgb(51, 65, 85),
                 BorderStyle = BorderStyle.None
@@ -810,7 +810,7 @@ namespace QQChatmateLauncher
                 Text = "等待二维码…",
                 ForeColor = MutedColor,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Location = new Point(12, 198),
+                Location = new Point(12, 258),
                 Size = new Size(470, 20)
             };
             qrPanel.Controls.Add(_qrHint);
@@ -1032,13 +1032,27 @@ namespace QQChatmateLauncher
                 }
 
                 // 用 FileStream 读，避免 Image.FromFile 锁文件导致协议端写不进去
+                Image raw;
                 using (var fs = new FileStream(qr, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                 using (var ms = new MemoryStream())
                 {
                     fs.CopyTo(ms);
                     ms.Position = 0;
-                    _qrBox.Image = Image.FromStream(ms);
+                    raw = Image.FromStream(ms);
                 }
+
+                // 关键：Lagrange 输出的 qr-*.png 只有 147x147，尺寸太小手机难扫。
+                // 它是纯黑白二值图，用最近邻放大 6 倍（不插值、不模糊）就清晰可扫。
+                int scale = Math.Max(1, 600 / Math.Max(raw.Width, raw.Height));
+                var big = new Bitmap(raw.Width * scale, raw.Height * scale);
+                using (var g = Graphics.FromImage(big))
+                {
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                    g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                    g.DrawImage(raw, 0, 0, big.Width, big.Height);
+                }
+                raw.Dispose();
+                _qrBox.Image = big;
 
                 _lastQrPath = qr;
                 _qrHint.Text = "用手机 QQ 扫码登录（码 5 分钟内有效）";
