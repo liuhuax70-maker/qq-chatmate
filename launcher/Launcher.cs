@@ -482,6 +482,30 @@ namespace QQChatmateLauncher
             return "机器人本就没在运行";
         }
 
+        /// <summary>
+        /// 确保 appsettings.json 里两个关键开关是对的：
+        ///   GetOptimumServer=false  → 不用 ICMP Ping 探测服务器（否则登录崩在权限上）
+        ///   ConsoleCompatibilityMode=false → 避免二维码输出的兼容模式问题
+        /// 失败不阻断启动，只记录。
+        /// </summary>
+        public static void EnsureLagrangeConfig(string publish)
+        {
+            try
+            {
+                string cfg = Path.Combine(publish, "appsettings.json");
+                if (!File.Exists(cfg)) return;
+                string text = File.ReadAllText(cfg, Encoding.UTF8);
+                string patched = text
+                    .Replace("\"GetOptimumServer\": true", "\"GetOptimumServer\": false")
+                    .Replace("\"ConsoleCompatibilityMode\": true", "\"ConsoleCompatibilityMode\": false");
+                if (patched != text)
+                {
+                    try { File.Copy(cfg, cfg + ".bak", true); } catch { }
+                    File.WriteAllText(cfg, patched, new UTF8Encoding(false));
+                }
+            }
+            catch { }
+        }
         public static string StartLagrange()
         {
             if (TestLagrange()) return "协议端已在运行";
@@ -490,6 +514,13 @@ namespace QQChatmateLauncher
             string exe = Path.Combine(publish, "Lagrange.OneBot.exe");
             if (!File.Exists(exe)) return "找不到协议端：" + exe;
             LagrangePublish = publish;
+
+            // 自动修 appsettings：GetOptimumServer=true 会让 Lagrange 用 ICMP Ping
+            // 探测最快服务器，但 Ping 需要原始套接字权限，普通权限下登录直接崩：
+            //   Win32Exception (5): 拒绝访问
+            //   at System.Net.NetworkInformation.Ping.DoSendPingCore
+            // 这里每次启动都确保它是 false，省得手工改漏。
+            EnsureLagrangeConfig(publish);
 
             // ⚠️ 重要：Lagrange 是 .NET 单文件自包含应用，启动时无条件读
             // Console.BufferWidth，没有真实控制台就崩（IOException: 句柄无效）。
