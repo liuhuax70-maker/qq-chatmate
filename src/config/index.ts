@@ -226,7 +226,7 @@ const ConfigSchema = z.object({
   proactive: z
     .object({
       enabled: z.boolean().default(true),
-      quietHours: z.tuple([z.number(), z.number()]).default([1, 8]),
+      quietHours: z.tuple([z.number(), z.number()]).default([2, 7]),
       maxPerDay: z.number().default(2),
       maxPerHour: z.number().default(1),
       minGapMinutes: z.number().default(120),

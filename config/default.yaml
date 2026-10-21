@@ -267,8 +267,8 @@ throttle:
 proactive:
   enabled: true
   # 深夜禁言：这个区间内绝不主动开口（除了晚安，晚安有独立窗口）
-  # ⚠️ 必须 <= 早安最早时间(6)，且不能盖住晚安窗口(0-2)
-  quietHours: [2, 6]
+  # 一直盖到早安窗口(7点)开始，避免 6-7 点这个空档乱开口
+  quietHours: [2, 7]
   maxPerDay: 2
   maxPerHour: 1
   minGapMinutes: 120           # 两次主动开口最小间隔
