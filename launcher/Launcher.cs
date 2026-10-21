@@ -25,6 +25,10 @@ namespace QQChatmateLauncher
         static string TtsPython;
         static string TtsScript;
         public static string LogDir;
+        /// <summary>启动器拉起的子进程（关闭时统一清理）</summary>
+        public static readonly System.Collections.Generic.List<Process> Children = new System.Collections.Generic.List<Process>();
+        /// <summary>协议端工作目录（用于找二维码）</summary>
+        public static string LagrangePublish;
         const string SignContainer = "ntqq-sign-server";
 
         [STAThread]
@@ -130,20 +134,9 @@ namespace QQChatmateLauncher
         {
             int pid = PidByPort(port);
             if (pid <= 0) return false;
-            try
-            {
-                var psi = new ProcessStartInfo("taskkill", "/PID " + pid + " /T /F")
-                {
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-                var p = Process.Start(psi);
-                p.WaitForExit(5000);
-            }
-            catch { }
-            Thread.Sleep(700);
+            KillTree(pid);
+            Thread.Sleep(900);
+            // 如实返回：杀完还占着端口就是没成功（通常是权限问题）
             return !TestPort(port);
         }
 
@@ -194,37 +187,31 @@ namespace QQChatmateLauncher
         /// </summary>
         public static bool TestLagrange()
         {
-            string[] names = { "Lagrange.OneBot", "Lagrange.OneBot" };
-            foreach (string n in names)
-            {
-                try
-                {
-                    var arr = Process.GetProcessesByName(n);
-                    bool any = arr.Length > 0;
-                    foreach (var p in arr) p.Dispose();
-                    if (any) return true;
-                }
-                catch { }
-            }
-            // 兜底：用 tasklist 查（不受 .NET 权限枚举限制）
+            // 只用 tasklist 判断：GetProcessesByName 在受限权限下可能返回 0，
+            // 造成"进程明明在跑却报已停止"的误判。
             try
             {
                 var psi = new ProcessStartInfo("tasklist", "/FI \"IMAGENAME eq Lagrange.OneBot.exe\" /FO CSV /NH")
                 {
                     UseShellExecute = false,
                     CreateNoWindow = true,
-                    RedirectStandardOutput = true
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
                 };
                 using (var p = Process.Start(psi))
                 {
                     string o = p.StandardOutput.ReadToEnd();
-                    p.WaitForExit(5000);
+                    p.WaitForExit(6000);
                     return o.IndexOf("Lagrange.OneBot.exe", StringComparison.OrdinalIgnoreCase) >= 0;
                 }
             }
-            catch { return false; }
+            catch { }
+            // tasklist 也失败时才退回 .NET 枚举
+            var arr = Process.GetProcessesByName("Lagrange.OneBot");
+            bool any = arr.Length > 0;
+            foreach (var p in arr) p.Dispose();
+            return any;
         }
-
         public static bool TestSignContainer()
         {
             if (!GetDockerReady()) return false;
@@ -271,6 +258,83 @@ namespace QQChatmateLauncher
             {
                 return Tuple.Create(false, "err: " + e.Message);
             }
+        }
+        /// <summary>
+        /// 找协议端生成的二维码图片。Lagrange 登录前会把二维码写到
+        /// publish 目录下的 qr-{uin}.png，直接读它比解析控制台可靠得多。
+        /// </summary>
+        public static string FindQrCode()
+        {
+            try
+            {
+                string publish = LagrangePublish;
+                if (string.IsNullOrEmpty(publish))
+                    publish = Path.Combine(BaseDir, @"lagrange\Lagrange.OneBot\bin\Release\net9.0\win-x64\publish");
+                if (!Directory.Exists(publish)) return null;
+
+                var files = Directory.GetFiles(publish, "qr-*.png");
+                if (files.Length == 0) return null;
+
+                // 取最新的一个，并且要求是近期生成的（旧码已失效）
+                string newest = null;
+                DateTime newestTime = DateTime.MinValue;
+                foreach (string f in files)
+                {
+                    var t = File.GetLastWriteTime(f);
+                    if (t > newestTime) { newestTime = t; newest = f; }
+                }
+                // 超过 5 分钟的二维码视为过期
+                if ((DateTime.Now - newestTime).TotalMinutes > 5) return null;
+                return newest;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// 关掉启动器拉起的全部子进程（含进程树）。
+        /// 这样"关掉 exe = 关掉所有相关进程"。
+        /// </summary>
+        public static void KillAllChildren()
+        {
+            // 1) 先清理我们自己记录的进程
+            lock (Children)
+            {
+                foreach (var p in Children)
+                {
+                    try { if (!p.HasExited) KillTree(p.Id); } catch { }
+                    finally { try { p.Dispose(); } catch { } }
+                }
+                Children.Clear();
+            }
+
+            // 2) 再按端口/进程名兜底清理（防止有孤儿进程）
+            try { StopBot(); } catch { }
+            try { StopLagrange(); } catch { }
+            try { StopTts(); } catch { }
+
+            // 3) 签名服务容器也停掉（Docker Desktop 本身保留，别的程序可能要用）
+            try { StopSign(); } catch { }
+        }
+
+        /// <summary>杀掉整棵进程树</summary>
+        public static void KillTree(int pid)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("taskkill", "/PID " + pid + " /T /F")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using (var p = Process.Start(psi))
+                {
+                    p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(6000);
+                }
+            }
+            catch { }
         }
         public static bool RunHidden(string file, string args, int timeoutMs = 10000)
         {
@@ -351,68 +415,100 @@ namespace QQChatmateLauncher
         public static string StartLagrange()
         {
             if (TestLagrange()) return "协议端已在运行";
+
             string publish = Path.Combine(BaseDir, @"lagrange\Lagrange.OneBot\bin\Release\net9.0\win-x64\publish");
             string exe = Path.Combine(publish, "Lagrange.OneBot.exe");
             if (!File.Exists(exe)) return "找不到协议端：" + exe;
+            LagrangePublish = publish;
 
-            // 必须用 cmd 起（给它真实控制台），否则 Console.get_BufferWidth 会崩
-            string bundleDir = Path.Combine(BaseDir, @"lagrange\dotnet-tmp");
-            if (!Directory.Exists(bundleDir)) Directory.CreateDirectory(bundleDir);
-            string inner = "/c set DOTNET_BUNDLE_EXTRACT_BASE_DIR=" + bundleDir + " && \"" + exe + "\"";
+            // Lagrange 必须在真实控制台里跑（无控制台会因 Console.get_BufferWidth 崩溃，
+            // 重定向输出又需要提权）。唯一可靠的方式是用 .bat 里那句 start 开新控制台。
+            string bat = Path.Combine(BaseDir, @"launcher\start-lagrange.bat");
+            if (!File.Exists(bat))
+            {
+                // 没有 bat 就现写一个
+                string bundleDir = Path.Combine(BaseDir, @"lagrange\dotnet-tmp");
+                if (!Directory.Exists(bundleDir)) Directory.CreateDirectory(bundleDir);
+                var sb = new StringBuilder();
+                sb.AppendLine("@echo off");
+                sb.AppendLine("chcp 65001 >nul");
+                sb.AppendLine("cd /d \"" + publish + "\"");
+                sb.AppendLine("set DOTNET_BUNDLE_EXTRACT_BASE_DIR=" + bundleDir);
+                sb.AppendLine("Lagrange.OneBot.exe");
+                File.WriteAllText(bat, sb.ToString(), Encoding.Default);
+            }
+
             try
             {
-                Process.Start(new ProcessStartInfo("cmd.exe", inner)
+                var p = Process.Start(new ProcessStartInfo("cmd.exe", "/c start \"Lagrange\" \"" + bat + "\"")
                 {
-                    WorkingDirectory = publish,
                     UseShellExecute = true,
-                    WindowStyle = ProcessWindowStyle.Normal
+                    WorkingDirectory = BaseDir,
+                    WindowStyle = ProcessWindowStyle.Minimized
                 });
+                if (p != null) { lock (Children) { Children.Add(p); } }
             }
             catch (Exception e) { return "启动失败：" + e.Message; }
-            return "协议端启动中（首次需在弹出窗口扫码）";
-        }
 
+            return "协议端启动中（二维码稍后显示在下方）";
+        }
         public static string StopLagrange()
         {
-            var arr = Process.GetProcessesByName("Lagrange.OneBot");
-            if (arr.Length == 0) return "协议端本就没在运行";
+            // 不用 GetProcessesByName 做前置判断——受限权限下它会返回 0，
+            // 导致"明明在跑却报没在运行"。直接按镜像名 taskkill，让结果说话。
+            bool killed = false;
+            try
+            {
+                var psi = new ProcessStartInfo("taskkill", "/IM Lagrange.OneBot.exe /T /F")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using (var p = Process.Start(psi))
+                {
+                    string o = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(8000);
+                    killed = p.ExitCode == 0 && o.IndexOf("SUCCESS", StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+            }
+            catch { }
 
-            foreach (var p in arr)
+            Thread.Sleep(900);
+
+            // 兜底：还有残留就用 tasklist 找 PID 再逐个杀
+            if (TestLagrange())
             {
                 try
                 {
-                    var psi = new ProcessStartInfo("taskkill", "/PID " + p.Id + " /T /F")
+                    var psi2 = new ProcessStartInfo("tasklist", "/FI \"IMAGENAME eq Lagrange.OneBot.exe\" /FO CSV /NH")
                     {
                         UseShellExecute = false,
                         CreateNoWindow = true,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true
+                        RedirectStandardOutput = true
                     };
-                    var k = Process.Start(psi);
-                    k.StandardOutput.ReadToEnd();
-                    k.WaitForExit(5000);
+                    using (var p2 = Process.Start(psi2))
+                    {
+                        string o2 = p2.StandardOutput.ReadToEnd();
+                        p2.WaitForExit(6000);
+                        foreach (string line in o2.Split('\n'))
+                        {
+                            var m = System.Text.RegularExpressions.Regex.Match(line, "\"(\\d+)\"");
+                            if (m.Success)
+                            {
+                                int pid;
+                                if (int.TryParse(m.Groups[1].Value, out pid)) KillTree(pid);
+                            }
+                        }
+                    }
                 }
                 catch { }
-                finally { p.Dispose(); }
-            }
-            Thread.Sleep(800);
-
-            var still = Process.GetProcessesByName("Lagrange.OneBot");
-            if (still.Length > 0)
-            {
-                foreach (var p in still)
-                {
-                    try { p.Kill(); } catch { }
-                    finally { p.Dispose(); }
-                }
                 Thread.Sleep(800);
             }
 
-            var final = Process.GetProcessesByName("Lagrange.OneBot");
-            bool alive = final.Length > 0;
-            foreach (var p in final) p.Dispose();
-            if (alive) return "⚠️ 协议端仍在运行（可能权限不足，请手动结束）";
-            return "协议端已停止";
+            if (TestLagrange()) return "⚠️ 协议端仍在运行（权限不足，请以管理员身份运行启动器）";
+            return killed ? "协议端已停止" : "协议端已停止";
         }
 
         public static string StartSign()
@@ -497,6 +593,9 @@ namespace QQChatmateLauncher
         private Label _statusBar;
         private Dictionary<string, Label[]> _statusLabels = new Dictionary<string, Label[]>();
         private System.Windows.Forms.Timer _timer;
+        private PictureBox _qrBox;
+        private Label _qrHint;
+        private string _lastQrPath;
 
         private static readonly Color BgColor = Color.FromArgb(15, 23, 42);
         private static readonly Color CardColor = Color.FromArgb(30, 41, 59);
@@ -509,7 +608,7 @@ namespace QQChatmateLauncher
         public LauncherForm()
         {
             Text = "鲸奈 · QQ 网友 启动器";
-            ClientSize = new Size(560, 570);
+            ClientSize = new Size(560, 760);
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = BgColor;
             ForeColor = TextColor;
@@ -529,7 +628,7 @@ namespace QQChatmateLauncher
 
             var sub = new Label
             {
-                Text = "四个组件一键启停 · 关掉本窗口不影响它们继续运行",
+                Text = "四个组件一键启停 · 关闭本窗口会一并停止所有进程",
                 ForeColor = MutedColor,
                 Location = new Point(26, 50),
                 Size = new Size(490, 20)
@@ -617,14 +716,74 @@ namespace QQChatmateLauncher
             };
             Controls.Add(_statusBar);
 
+            // ── 二维码显示区 ───────────────────────────────
+            // Lagrange 登录前会把二维码写到 qr-*.png，这里直接读出来显示，
+            // 你就不用去管那个弹出的控制台窗口了。
+            var qrPanel = new Panel
+            {
+                Location = new Point(20, y + 118),
+                Size = new Size(504, 230),
+                BackColor = CardColor
+            };
+            Controls.Add(qrPanel);
+
+            var qrTitle = new Label
+            {
+                Text = "登录二维码（协议端启动后自动出现）",
+                ForeColor = MutedColor,
+                Location = new Point(12, 8),
+                Size = new Size(470, 20)
+            };
+            qrPanel.Controls.Add(qrTitle);
+
+            _qrBox = new PictureBox
+            {
+                Location = new Point(170, 34),
+                Size = new Size(160, 160),
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BackColor = Color.FromArgb(51, 65, 85),
+                BorderStyle = BorderStyle.None
+            };
+            qrPanel.Controls.Add(_qrBox);
+
+            _qrHint = new Label
+            {
+                Text = "等待二维码…",
+                ForeColor = MutedColor,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Location = new Point(12, 198),
+                Size = new Size(470, 20)
+            };
+            qrPanel.Controls.Add(_qrHint);
+
             _timer = new System.Windows.Forms.Timer { Interval = 3000 };
-            _timer.Tick += (s, e) => UpdateStatus();
+            _timer.Tick += (s, e) => { UpdateStatus(); UpdateQr(); };
             _timer.Start();
 
             Shown += (s, e) =>
             {
                 UpdateStatus();
+                UpdateQr();
                 SetStatus("就绪 · 点「一键全部启动」开始");
+            };
+
+            // 关闭窗口 = 停止所有组件。这就是"关掉 exe 就全关"。
+            FormClosing += (s, e) =>
+            {
+                if (MessageBox.Show(
+                        "关闭启动器会同时停止所有组件（机器人/协议端/TTS）。\n\n确定要退出吗？",
+                        "确认退出",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Question) == DialogResult.Yes)
+                {
+                    _timer.Stop();
+                    SetStatus("正在停止所有进程…");
+                    try { Program.KillAllChildren(); } catch { }
+                }
+                else
+                {
+                    e.Cancel = true;   // 用户选"否"就不关
+                }
             };
         }
 
@@ -771,6 +930,66 @@ namespace QQChatmateLauncher
             pair[0].ForeColor = up ? GreenColor : RedColor;
             pair[1].Text = text;
             pair[1].ForeColor = up ? GreenColor : MutedColor;
+        }
+
+        /// <summary>
+        /// 刷新二维码显示。协议端未登录时会不断写 qr-*.png，
+        /// 这里读最新的那张显示出来；登录成功后二维码消失，显示"已登录"。
+        /// </summary>
+        private void UpdateQr()
+        {
+            try
+            {
+                string qr = Program.FindQrCode();
+
+                if (qr == null)
+                {
+                    // 没二维码：要么协议端没启动，要么已经登录成功
+                    bool lagUp = Program.TestLagrange();
+                    if (lagUp)
+                    {
+                        _qrHint.Text = "✅ 已登录（无需扫码）";
+                        _qrHint.ForeColor = GreenColor;
+                    }
+                    else
+                    {
+                        _qrHint.Text = "等待二维码…（先启动协议端）";
+                        _qrHint.ForeColor = MutedColor;
+                    }
+                    _qrBox.Image = null;
+                    _lastQrPath = null;
+                    return;
+                }
+
+                // 路径没变就不重复加载，避免闪烁
+                if (qr == _lastQrPath && _qrBox.Image != null) return;
+
+                // 释放旧图，避免句柄泄漏
+                if (_qrBox.Image != null)
+                {
+                    var old = _qrBox.Image;
+                    _qrBox.Image = null;
+                    old.Dispose();
+                }
+
+                // 用 FileStream 读，避免 Image.FromFile 锁文件导致协议端写不进去
+                using (var fs = new FileStream(qr, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var ms = new MemoryStream())
+                {
+                    fs.CopyTo(ms);
+                    ms.Position = 0;
+                    _qrBox.Image = Image.FromStream(ms);
+                }
+
+                _lastQrPath = qr;
+                _qrHint.Text = "用手机 QQ 扫码登录（码 5 分钟内有效）";
+                _qrHint.ForeColor = BlueColor;
+            }
+            catch
+            {
+                _qrHint.Text = "二维码读取失败，稍后重试";
+                _qrHint.ForeColor = RedColor;
+            }
         }
     }
 }
