@@ -75,6 +75,17 @@ namespace QQChatmateLauncher
                     Console.WriteLine("签名服务：" + StopSign());
                     return;
                 }
+                if (mode == "-silent" || mode == "--silent")
+                {
+                    // 开机自启用：先把组件拉起来，再以最小化方式打开界面
+                    // （界面在托盘里，随时能点开看状态或停止）
+                    try { StartSign(); } catch { }
+                    try { StartLagrange(); } catch { }
+                    try { StartBot(); } catch { }
+                    try { StartTts(); } catch { }
+                    Application.Run(new LauncherForm(true));
+                    return;
+                }
             }
 
             Application.Run(new LauncherForm());
@@ -655,6 +666,7 @@ namespace QQChatmateLauncher
         private PictureBox _qrBox;
         private Label _qrHint;
         private string _lastQrPath;
+        private readonly bool _startMinimized;
 
         private static readonly Color BgColor = Color.FromArgb(15, 23, 42);
         private static readonly Color CardColor = Color.FromArgb(30, 41, 59);
@@ -664,8 +676,11 @@ namespace QQChatmateLauncher
         private static readonly Color RedColor = Color.FromArgb(248, 113, 113);
         private static readonly Color BlueColor = Color.FromArgb(96, 165, 250);
 
-        public LauncherForm()
+        public LauncherForm() : this(false) { }
+
+        public LauncherForm(bool startMinimized)
         {
+            _startMinimized = startMinimized;
             Text = "鲸奈 · QQ 网友 启动器";
             ClientSize = new Size(560, 820);
             StartPosition = FormStartPosition.CenterScreen;
@@ -823,7 +838,17 @@ namespace QQChatmateLauncher
             {
                 UpdateStatus();
                 UpdateQr();
-                SetStatus("就绪 · 点「一键全部启动」开始");
+                if (_startMinimized)
+                {
+                    // 开机自启：收进任务栏，不打扰用户
+                    WindowState = FormWindowState.Minimized;
+                    ShowInTaskbar = true;
+                    SetStatus("已自动启动 · 双击任务栏图标可查看");
+                }
+                else
+                {
+                    SetStatus("就绪 · 点「一键全部启动」开始");
+                }
             };
 
             // 关闭窗口 = 停止所有组件。这就是"关掉 exe 就全关"。

@@ -55,3 +55,17 @@
 - **Lagrange 首次启动必须扫码**，会弹出独立窗口，扫完才能连上
 - Lagrange 必须有真实控制台窗口，不能后台静默启动（否则 `Console.get_BufferWidth` 崩溃），所以用 `start-lagrange.bat` 包装
 - Docker Desktop 冷启动可能要 1-2 分钟，启动器最多等 120 秒
+## 开机自启
+
+想让它在 Windows 登录时自动启动全部组件：
+
+```bat
+autostart.bat on     开启自启
+autostart.bat off    关闭自启
+autostart.bat check  查看当前状态
+```
+
+开启后，登录时会以 `-silent` 模式运行：组件自动拉起，界面最小化在任务栏里
+（双击可查看状态或停止），不打扰你。
+
+关闭自启只是删除注册表项，不会影响已经在跑的组件。
