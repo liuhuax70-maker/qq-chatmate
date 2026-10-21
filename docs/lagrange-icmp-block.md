@@ -150,3 +150,57 @@ $task = (New-Object System.Net.NetworkInformation.Ping).SendPingAsync("223.5.5.5
 $task.Wait(3000) | Out-Null
 $task.Result.Status
 ```
+---
+
+## 更新：2026-10-21 20:15 加了例外仍然失败 → 找到真正原因
+
+用户在卡巴斯基加了例外后重新启动，**仍然报同样的 PingException**。
+于是做了决定性对照实验。
+
+### 实验：同一个 Ping API，不同进程
+
+| 调用位置 | 结果 |
+|---|---|
+| PowerShell 进程内直接调 `Ping.Send()` | ✅ Success 29ms |
+| 独立编译的 `pingtest.exe`（我写的测试程序） | ❌ Win32Exception(5) 拒绝访问 |
+| `pingtest.exe` 由 cmd 启动 | ❌ 同样失败 |
+| `pingtest.exe` 由 powershell 启动 | ❌ 同样失败 |
+| `pingtest.exe` 加 asInvoker manifest 重编 | ❌ 同样失败 |
+| 系统 `ping` 命令 | ✅ 成功 |
+
+### 结论
+
+**不是权限级别问题，是程序信任等级问题。**
+
+当前进程身份完全相同（`FURINA\natasuki`，Medium 完整性级别），
+差异只在**程序本身**：
+
+- `powershell.exe` —— 微软签名，卡巴斯基默认信任 → 放行 ICMP
+- 未签名 exe（`pingtest.exe`、`Lagrange.OneBot.exe`）→ 归入「未识别/低限制」
+  → 应用程序控制拦截其 ICMP 原始套接字操作
+
+**重要：卡巴斯基的「排除项 / 文件白名单」管的是杀毒扫描，不覆盖应用程序控制的网络规则。**
+这就是为什么加了例外仍然失败——加错了位置。
+
+### 正确的放行方法
+
+卡巴斯基 → 设置 → 安全 → **入侵防御 → 管理应用程序**
+→ 找到「未识别程序」或「低限制」分组里的 `Lagrange.OneBot.exe`
+→ 右键 → **限制** → 改为「**受信任**」
+
+需要改的是**程序分组**，不是文件排除列表。
+
+### 备选方案
+
+1. **以管理员身份运行** —— 管理员进程通常不受用户级应用程序控制约束
+2. **换协议端** —— NapCat 登录时不做 ICMP 探测，没有这个依赖
+
+---
+
+## 补充：为什么改 GetOptimumServer 完全无效
+
+反编译检查 exe 内嵌的默认配置模板，确认 `GetOptimumServer` 是合法字段。
+但从调用栈看 `SocketContext.Connect()` **无条件**调用
+`OptimumServer(requestMsf, useIPv6Network)`，该配置项在当前版本没有参与这个分支的判定。
+
+所以"关掉最优服务器选择"这条路是死的，必须解决 Ping 本身。
