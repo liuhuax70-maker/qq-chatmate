@@ -491,36 +491,31 @@ namespace QQChatmateLauncher
             if (!File.Exists(exe)) return "找不到协议端：" + exe;
             LagrangePublish = publish;
 
-            // Lagrange 必须在真实控制台里跑（无控制台会因 Console.get_BufferWidth 崩溃，
-            // 重定向输出又需要提权）。唯一可靠的方式是用 .bat 里那句 start 开新控制台。
-            string bat = Path.Combine(BaseDir, @"launcher\start-lagrange.bat");
-            if (!File.Exists(bat))
-            {
-                // 没有 bat 就现写一个
-                string bundleDir = Path.Combine(BaseDir, @"lagrange\dotnet-tmp");
-                if (!Directory.Exists(bundleDir)) Directory.CreateDirectory(bundleDir);
-                var sb = new StringBuilder();
-                sb.AppendLine("@echo off");
-                sb.AppendLine("chcp 65001 >nul");
-                sb.AppendLine("cd /d \"" + publish + "\"");
-                sb.AppendLine("set DOTNET_BUNDLE_EXTRACT_BASE_DIR=" + bundleDir);
-                sb.AppendLine("Lagrange.OneBot.exe");
-                File.WriteAllText(bat, sb.ToString(), Encoding.Default);
-            }
+            // ⚠️ 重要：Lagrange 是 .NET 单文件自包含应用，启动时无条件读
+            // Console.BufferWidth，没有真实控制台就崩（IOException: 句柄无效）。
+            // ConPTY 伪终端也不行——单文件 apphost fork 的子进程不继承伪终端。
+            // 唯一可靠办法：用 start 开一个真实控制台窗口（最小化，不挡你）。
+            string bundleDir = Path.Combine(BaseDir, @"lagrange\dotnet-tmp");
+            if (!Directory.Exists(bundleDir)) Directory.CreateDirectory(bundleDir);
 
             try
             {
-                var p = Process.Start(new ProcessStartInfo("cmd.exe", "/c start \"Lagrange\" \"" + bat + "\"")
-                {
-                    UseShellExecute = true,
-                    WorkingDirectory = BaseDir,
-                    WindowStyle = ProcessWindowStyle.Minimized
-                });
+                // 用 /min 让窗口最小化：有控制台但不上来抢焦点
+                // UseShellExecute=true 时不能设 EnvironmentVariables，
+                // 所以把 set 写在 cmd 命令串里，用 && 连接。
+                // 注意 start 的 /D 是指定工作目录，后面才是要跑的程序。
+                string inner = "/c set DOTNET_BUNDLE_EXTRACT_BASE_DIR=" + bundleDir
+                    + " && start /min \"Lagrange\" /D \"" + publish + "\" \"" + exe + "\"";
+                var psi = new ProcessStartInfo("cmd.exe", inner);
+                psi.UseShellExecute = true;
+                psi.WorkingDirectory = publish;
+                psi.WindowStyle = ProcessWindowStyle.Minimized;
+                var p = Process.Start(psi);
                 if (p != null) { lock (Children) { Children.Add(p); } }
             }
             catch (Exception e) { return "启动失败：" + e.Message; }
 
-            return "协议端启动中（二维码稍后显示在下方）";
+            return "协议端启动中（窗口已最小化，二维码稍后显示在下方）";
         }
         public static string StopLagrange()
         {
