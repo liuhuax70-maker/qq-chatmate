@@ -142,10 +142,28 @@ namespace QQChatmateLauncher
 
         public static bool GetDockerReady()
         {
+            // docker CLI 在某些权限上下文下连不上命名管道，会返回"permission denied"。
+            // 用三重探测，任一成功即认为就绪：
+            //   1) docker ps 的 exit code
+            //   2) docker ps 输出里不含 permission denied
+            //   3) WSL/后端进程存在且 8090 端口被占用（签名服务的强信号）
             var r = Exec("docker", new[] { "ps" }, 8000);
-            return r.Item1;
-        }
+            if (r.Item1) return true;
 
+            string outp = r.Item2 ?? "";
+            // 明确是权限问题 → 说明引擎本身是活的，只是我们没权限
+            if (outp.IndexOf("permission denied", StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+            if (outp.IndexOf("client version", StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;   // 能跟 docker 说上话
+            if (outp.IndexOf("CONTAINER ID", StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+
+            // 兜底：签名服务端口在监听，说明 Docker 引擎和容器都是活的
+            if (TestPort(8090)) return true;
+
+            return false;
+        }
         public static string FindDockerDesktop()
         {
             string[] candidates = new[]
@@ -164,14 +182,54 @@ namespace QQChatmateLauncher
 
         public static bool StartDockerIfNeeded()
         {
+            // 关键：先多次确认引擎状态。
+            // Docker Desktop 会用 launcher.lock 防止重复启动，
+            // 如果它已经在跑我们再去 Start 一次，就会弹
+            // "acquiring launcher lock: Access is denied" 的错误框。
+            // 所以：只要引擎能用，就绝不碰 Docker Desktop。
             if (GetDockerReady()) return true;
+            // 再重试两次（引擎可能正在启动中）
+            for (int i = 0; i < 2; i++)
+            {
+                Thread.Sleep(2000);
+                if (GetDockerReady()) return true;
+            }
+
+            // 检查 Docker Desktop 是否已在运行（有进程就说明在启动/运行中，
+            // 此时绝不能重复拉起，等它就绪即可）
+            bool ddRunning = false;
+            try
+            {
+                var procs = Process.GetProcessesByName("Docker Desktop");
+                ddRunning = procs.Length > 0;
+                foreach (var p in procs) p.Dispose();
+            }
+            catch { }
+
+            if (ddRunning)
+            {
+                // 已在运行，只等它就绪，不重复启动
+                for (int i = 0; i < 40; i++)
+                {
+                    Thread.Sleep(3000);
+                    if (GetDockerReady()) return true;
+                }
+                return false;
+            }
+
+            // 确实没在运行，才去启动
             string exe = FindDockerDesktop();
             if (exe == null) return false;
             try
             {
-                Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Minimized });
+                Process.Start(new ProcessStartInfo(exe)
+                {
+                    UseShellExecute = true,
+                    WindowStyle = ProcessWindowStyle.Minimized
+                });
             }
             catch { return false; }
+
             for (int i = 0; i < 40; i++)
             {
                 Thread.Sleep(3000);
@@ -179,7 +237,6 @@ namespace QQChatmateLauncher
             }
             return false;
         }
-
         /// <summary>
         /// 判断协议端是否在运行。
         /// 用多个可能的进程名探测（不同版本/发布方式进程名可能是 Lagrange.OneBot
@@ -214,11 +271,13 @@ namespace QQChatmateLauncher
         }
         public static bool TestSignContainer()
         {
+            // 最强信号：签名服务端口在监听（8090）。
+            // docker CLI 在受限权限下会 permission denied，但端口不会骗人。
+            if (TestPort(8090)) return true;
             if (!GetDockerReady()) return false;
             var r = Exec("docker", new[] { "ps", "--filter", "name=" + SignContainer, "--format", "{{.Names}}" }, 8000);
-            return r.Item2.Contains(SignContainer);
+            return r.Item2.IndexOf(SignContainer, StringComparison.OrdinalIgnoreCase) >= 0;
         }
-
         /// <summary>
         /// 执行外部命令，参数逐个传入（避免 ProcessStartInfo 把整串当成一个参数）。
         /// 返回 (是否成功, 标准输出)。
@@ -514,7 +573,7 @@ namespace QQChatmateLauncher
         public static string StartSign()
         {
             if (TestSignContainer()) return "签名服务已在运行";
-            if (!StartDockerIfNeeded()) return "Docker 未就绪，请先手动启动 Docker Desktop";
+            if (!StartDockerIfNeeded()) return "Docker 引擎未就绪（若 Docker Desktop 已开着，请等它就绪再试）";
             if (RunHidden("docker", "start " + SignContainer)) return "签名服务已启动";
             return "启动失败，请检查容器 " + SignContainer + " 是否存在";
         }
