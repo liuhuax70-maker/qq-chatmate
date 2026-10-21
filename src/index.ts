@@ -19,6 +19,41 @@ import { ProactiveScheduler } from './proactive';
 
 dotenv.config();
 
+/**
+ * 从她的回复里提取歌词行。
+ *
+ * 她会用换行把歌词分行写（prompt 里要求了）。这里按行拆、去掉标记和空行，
+ * 只保留可念的中文。如果她没分行（写成一段），就按标点拆成短句。
+ */
+function extractLyrics(text: string): string[] {
+  let lines = text
+    .replace(/\[(?:表情|face)\s*[:：][^\]]+\]/g, '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  // 只有一行且较长 → 按标点拆，不然一口气念太长
+  if (lines.length === 1 && lines[0].length > 12) {
+    const parts = lines[0]
+      .split(/[，,。.！!？?；;~～]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (parts.length > 1) lines = parts;
+  }
+
+  // 每行别太长（一首歌的分行），超了按标点再拆
+  const out: string[] = [];
+  for (const l of lines.slice(0, 8)) {
+    if (l.length <= 12) {
+      out.push(l);
+    } else {
+      const sub = l.split(/[，,。.！!？?；;]+/).map((s) => s.trim()).filter(Boolean);
+      out.push(...sub.slice(0, 4));
+    }
+  }
+  return out.slice(0, 8);
+}
+
 async function main(): Promise<void> {
   const cfg = loadConfig();
   const logger = initLogger(cfg.infra.log);
@@ -199,7 +234,36 @@ async function main(): Promise<void> {
       let voiced = false;          // 语音是否已成功发出
       let voiceAttempted = false;  // 本次是否尝试过语音
 
-      if (singleSeg && !hasEmojiMarker && tts.shouldVoice(singleSeg)) {
+      // ── 唱歌（念歌词）────────────────────────────────────
+      // 触发：你要求她唱，或她自己想唱。
+      // 不是真唱——是用她的音色有节奏地把歌词念出来。
+      const wantSong = tts.shouldSing(text, processed.text);
+      if (wantSong) {
+        voiceAttempted = true;
+        const lyrics = extractLyrics(processed.text);
+        if (lyrics.length > 0) {
+          logger.info({ lines: lyrics.length, text: processed.text.slice(0, 30) }, '触发表演唱歌');
+          const t0 = Date.now();
+          const res = await tts.synthesizeSong(lyrics.join('\n'), { speed: 1.0, gapMs: 350 });
+          if (res.ok && res.audio) {
+            try {
+              const vres = await adapter.sendPrivateVoice(userId, res.audio, 'wav');
+              logger.info(
+                { messageId: vres?.message_id, dur: res.duration, synthMs: Date.now() - t0 },
+                '唱歌语音已发送',
+              );
+              voiced = true;
+            } catch (err) {
+              logger.warn({ err: (err as Error).message }, '发送唱歌语音失败，回退文字');
+            }
+          } else {
+            logger.warn({ err: res.error }, '唱歌合成失败');
+          }
+        }
+      }
+
+      // ── 普通语音 ─────────────────────────────────────────
+      if (!voiced && singleSeg && !hasEmojiMarker && tts.shouldVoice(singleSeg)) {
         voiceAttempted = true;
         logger.info({ chars: singleSeg.length }, '触发语音回复');
         const t0 = Date.now();
@@ -293,12 +357,22 @@ async function main(): Promise<void> {
 
   // ── 绑定主动开口的发送通道 ──────────────────────────────
   proactive.bindSender(async (text: string) => {
+    // 主动开口是"锦上添花"：协议端没连、发送失败都不该拖垮整个程序。
+    // 之前没兜底，协议端恰好掉线时这里抛错 → 未捕获 rejection → 进程直接退出。
+    if (!adapter.isConnected()) {
+      logger.warn('协议端未连接，跳过本次主动开口');
+      return;
+    }
     const delay = post.typingDelayMs(text.length);
     logger.info({ chars: text.length, delayMs: delay }, '主动开口：准备发送');
     await sleep(delay);
-    for (const seg of post.split(text)) {
-      await adapter.sendPrivateMessageSegments(peerId, post.toSegments(seg));
-      await sleep(post.segmentPauseMs());
+    try {
+      for (const seg of post.split(text)) {
+        await adapter.sendPrivateMessageSegments(peerId, post.toSegments(seg));
+        await sleep(post.segmentPauseMs());
+      }
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, '主动开口发送失败（已忽略，不影响运行）');
     }
   });
   proactive.start();
@@ -489,6 +563,18 @@ async function main(): Promise<void> {
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+  // 全局兜底：任何未捕获的异步异常都只记日志，不让整个程序退出。
+  // 这是个 7x24 长期在线的服务，"某一次发送失败"绝不该等于"服务挂掉"。
+  process.on('unhandledRejection', (reason) => {
+    logger.error(
+      { err: (reason as Error)?.message ?? String(reason) },
+      '未捕获的 Promise rejection（已忽略，程序继续运行）',
+    );
+  });
+  process.on('uncaughtException', (err) => {
+    logger.error({ err: err.message, stack: err.stack }, '未捕获异常（已忽略，程序继续运行）');
+  });
 
   // 定期持久化关系状态
   setInterval(() => session.persist(), cfg.session.persistIntervalMs);
