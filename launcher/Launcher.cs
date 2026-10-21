@@ -14,7 +14,7 @@ namespace QQChatmateLauncher
     /// <summary>
     /// 鲸奈 · QQ 网友 一键启动器
     ///
-    /// 管理四个组件：机器人主程序 / Lagrange 协议端 / 签名服务 / TTS
+    /// 管理四个组件：机器人主程序 / NapCat 协议端 / 签名服务 / TTS
     /// 编译为单文件 .exe，.NET Framework 4 自带，无需额外运行时。
     /// </summary>
     static class Program
@@ -29,6 +29,8 @@ namespace QQChatmateLauncher
         public static readonly System.Collections.Generic.List<Process> Children = new System.Collections.Generic.List<Process>();
         /// <summary>协议端工作目录（用于找二维码）</summary>
         public static string LagrangePublish;
+        /// <summary>NapCat 根目录（新协议端）</summary>
+        public static string NapCatDir;
         const string SignContainer = "ntqq-sign-server";
 
         [STAThread]
@@ -253,32 +255,40 @@ namespace QQChatmateLauncher
         /// 用多个可能的进程名探测（不同版本/发布方式进程名可能是 Lagrange.OneBot
         /// 或 dotnet），避免只匹配一个名字导致误判为"已停止"。
         /// </summary>
+        /// <summary>
+        /// 判断协议端是否在运行。
+        /// NapCat 是 hook 到 QQ 进程里跑的，所以判断「QQ 被 NapCat 拉起」。
+        /// 用 tasklist 判断，避免 GetProcessesByName 在受限权限下返回 0。
+        /// </summary>
         public static bool TestLagrange()
         {
-            // 只用 tasklist 判断：GetProcessesByName 在受限权限下可能返回 0，
-            // 造成"进程明明在跑却报已停止"的误判。
-            try
+            // NapCat Shell 模式会拉起 QQ.exe，同时 NapCat 的 node 也在跑
+            foreach (string img in new[] { "QQ.exe", "QQEX.exe", "node.exe" })
             {
-                var psi = new ProcessStartInfo("tasklist", "/FI \"IMAGENAME eq Lagrange.OneBot.exe\" /FO CSV /NH")
+                try
                 {
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-                using (var p = Process.Start(psi))
-                {
-                    string o = p.StandardOutput.ReadToEnd();
-                    p.WaitForExit(6000);
-                    return o.IndexOf("Lagrange.OneBot.exe", StringComparison.OrdinalIgnoreCase) >= 0;
+                    var psi = new ProcessStartInfo("tasklist", "/FI \"IMAGENAME eq " + img + "\" /FO CSV /NH")
+                    {
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    };
+                    using (var p = Process.Start(psi))
+                    {
+                        string o = p.StandardOutput.ReadToEnd();
+                        p.WaitForExit(6000);
+                        if (o.IndexOf(img, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            // node.exe 太泛了（机器人也是 node），这里只认 QQ 系
+                            if (img.StartsWith("QQ")) return true;
+                        }
+                    }
                 }
+                catch { }
             }
-            catch { }
-            // tasklist 也失败时才退回 .NET 枚举
-            var arr = Process.GetProcessesByName("Lagrange.OneBot");
-            bool any = arr.Length > 0;
-            foreach (var p in arr) p.Dispose();
-            return any;
+            // 兜底：8080 有反向 WS 连接说明协议端在线
+            return false;
         }
         public static bool TestSignContainer()
         {
@@ -508,105 +518,57 @@ namespace QQChatmateLauncher
         }
         public static string StartLagrange()
         {
-            if (TestLagrange()) return "协议端已在运行";
+            // NapCat 版：启动 NapCat（hook QQ）
+            string napDir = Path.Combine(BaseDir, "napcat");
+            NapCatDir = napDir;
+            if (!Directory.Exists(napDir)) return "找不到 NapCat 目录：" + napDir;
 
-            string publish = Path.Combine(BaseDir, @"lagrange\Lagrange.OneBot\bin\Release\net9.0\win-x64\publish");
-            string exe = Path.Combine(publish, "Lagrange.OneBot.exe");
-            if (!File.Exists(exe)) return "找不到协议端：" + exe;
-            LagrangePublish = publish;
+            string launcher = Path.Combine(napDir, @"napcat\launcher-user.bat");
+            if (!File.Exists(launcher)) return "找不到 launcher-user.bat：" + launcher;
 
-            // 自动修 appsettings：GetOptimumServer=true 会让 Lagrange 用 ICMP Ping
-            // 探测最快服务器，但 Ping 需要原始套接字权限，普通权限下登录直接崩：
-            //   Win32Exception (5): 拒绝访问
-            //   at System.Net.NetworkInformation.Ping.DoSendPingCore
-            // 这里每次启动都确保它是 false，省得手工改漏。
-            EnsureLagrangeConfig(publish);
-
-            // ⚠️ 重要：Lagrange 是 .NET 单文件自包含应用，启动时无条件读
-            // Console.BufferWidth，没有真实控制台就崩（IOException: 句柄无效）。
-            // ConPTY 伪终端也不行——单文件 apphost fork 的子进程不继承伪终端。
-            // 唯一可靠办法：用 start 开一个真实控制台窗口（最小化，不挡你）。
-            string bundleDir = Path.Combine(BaseDir, @"lagrange\dotnet-tmp");
-            if (!Directory.Exists(bundleDir)) Directory.CreateDirectory(bundleDir);
-
+            // NapCat 会拉起 QQ 并注入，需要真实 GUI（QQ 登录窗口）。
+            // 这里用 start 开一个最小化窗口跑 launcher。
             try
             {
-                // 用 /min 让窗口最小化：有控制台但不上来抢焦点
-                // UseShellExecute=true 时不能设 EnvironmentVariables，
-                // 所以把 set 写在 cmd 命令串里，用 && 连接。
-                // 注意 start 的 /D 是指定工作目录，后面才是要跑的程序。
-                string inner = "/c set DOTNET_BUNDLE_EXTRACT_BASE_DIR=" + bundleDir
-                    + " && start /min \"Lagrange\" /D \"" + publish + "\" \"" + exe + "\"";
-                var psi = new ProcessStartInfo("cmd.exe", inner);
+                var psi = new ProcessStartInfo("cmd.exe",
+                    "/c start /min \"NapCat\" \"" + launcher + "\"");
                 psi.UseShellExecute = true;
-                psi.WorkingDirectory = publish;
-                psi.WindowStyle = ProcessWindowStyle.Minimized;
+                psi.WorkingDirectory = napDir;
                 var p = Process.Start(psi);
                 if (p != null) { lock (Children) { Children.Add(p); } }
             }
             catch (Exception e) { return "启动失败：" + e.Message; }
 
-            return "协议端启动中（窗口已最小化，二维码稍后显示在下方）";
+            return "NapCat 启动中（会弹出 QQ 登录窗口，首次需扫码）";
         }
         public static string StopLagrange()
         {
-            // 不用 GetProcessesByName 做前置判断——受限权限下它会返回 0，
-            // 导致"明明在跑却报没在运行"。直接按镜像名 taskkill，让结果说话。
+            // NapCat 版：关闭 QQ（NapCat 注入在里面）和 NapCat 的 node
             bool killed = false;
-            try
-            {
-                var psi = new ProcessStartInfo("taskkill", "/IM Lagrange.OneBot.exe /T /F")
-                {
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-                using (var p = Process.Start(psi))
-                {
-                    string o = p.StandardOutput.ReadToEnd();
-                    p.WaitForExit(8000);
-                    killed = p.ExitCode == 0 && o.IndexOf("SUCCESS", StringComparison.OrdinalIgnoreCase) >= 0;
-                }
-            }
-            catch { }
-
-            Thread.Sleep(900);
-
-            // 兜底：还有残留就用 tasklist 找 PID 再逐个杀
-            if (TestLagrange())
+            foreach (string img in new[] { "QQ.exe", "QQEX.exe", "node.exe" })
             {
                 try
                 {
-                    var psi2 = new ProcessStartInfo("tasklist", "/FI \"IMAGENAME eq Lagrange.OneBot.exe\" /FO CSV /NH")
+                    var psi = new ProcessStartInfo("taskkill", "/IM " + img + " /T /F")
                     {
                         UseShellExecute = false,
                         CreateNoWindow = true,
-                        RedirectStandardOutput = true
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
                     };
-                    using (var p2 = Process.Start(psi2))
+                    using (var p = Process.Start(psi))
                     {
-                        string o2 = p2.StandardOutput.ReadToEnd();
-                        p2.WaitForExit(6000);
-                        foreach (string line in o2.Split('\n'))
-                        {
-                            var m = System.Text.RegularExpressions.Regex.Match(line, "\"(\\d+)\"");
-                            if (m.Success)
-                            {
-                                int pid;
-                                if (int.TryParse(m.Groups[1].Value, out pid)) KillTree(pid);
-                            }
-                        }
+                        string o = p.StandardOutput.ReadToEnd();
+                        p.WaitForExit(8000);
+                        if (o.IndexOf("SUCCESS", StringComparison.OrdinalIgnoreCase) >= 0) killed = true;
                     }
                 }
                 catch { }
-                Thread.Sleep(800);
             }
-
-            if (TestLagrange()) return "⚠️ 协议端仍在运行（权限不足，请以管理员身份运行启动器）";
-            return killed ? "协议端已停止" : "协议端已停止";
+            Thread.Sleep(900);
+            if (TestLagrange()) return "⚠️ 协议端仍在运行（可能权限不足，请手动关闭 QQ）";
+            return killed ? "协议端已停止" : "协议端本就没在运行";
         }
-
         public static string StartSign()
         {
             if (TestSignContainer()) return "签名服务已在运行";
@@ -665,7 +627,7 @@ namespace QQChatmateLauncher
             Console.WriteLine("=== 鲸奈 · QQ 网友 组件状态 ===");
             Console.WriteLine();
             PrintLine(bot, "机器人主程序", "端口 3000/8080");
-            PrintLine(lag, "Lagrange 协议端", lag && bot ? "在线" : (lag ? "未连上机器人" : "未运行"));
+            PrintLine(lag, "NapCat 协议端", lag && bot ? "在线" : (lag ? "未连上机器人" : "未运行"));
             PrintLine(sign, "签名服务", GetDockerReady() ? "Docker 就绪" : "Docker 未运行");
             PrintLine(tts, "TTS 语音", "端口 9880");
             Console.WriteLine();
@@ -738,7 +700,7 @@ namespace QQChatmateLauncher
             int y = 84;
             AddComponentRow("bot", "机器人主程序", y, () => Program.StartBot(), () => Program.StopBot());
             y += 64;
-            AddComponentRow("lagrange", "Lagrange 协议端", y, () => Program.StartLagrange(), () => Program.StopLagrange());
+            AddComponentRow("lagrange", "NapCat 协议端", y, () => Program.StartLagrange(), () => Program.StopLagrange());
             y += 64;
             AddComponentRow("sign", "签名服务", y, () => Program.StartSign(), () => Program.StopSign());
             y += 64;
