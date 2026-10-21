@@ -151,6 +151,26 @@ export function startHttpServer(opts: HttpOptions, ctx: HttpContext, logger: Log
         return;
       }
 
+      // 二维码：读协议端生成的 qr-*.png，转成 data URL 返回
+      if (url === '/api/qrcode' && req.method === 'GET') {
+        void (async () => {
+          try {
+            const qr = await findQrDataUrl();
+            if (!qr) {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, reason: '等待二维码…（先启动协议端）' }));
+              return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, dataUrl: qr }));
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: (err as Error).message }));
+          }
+        })();
+        return;
+      }
+
       const controlMatch = url.match(/^\/api\/control\/([a-z]+)\/(start|stop)$/);
       if (controlMatch && req.method === 'POST') {
         if (!ctx.panel) {
@@ -207,6 +227,37 @@ export function startHttpServer(opts: HttpOptions, ctx: HttpContext, logger: Log
   });
 }
 
+/**
+ * 找到协议端当前有效的二维码，转成 data URL 给面板显示。
+ *
+ * Lagrange 会把二维码写到 publish 目录的 qr-<uin>.png（约 147x147 的纯黑白图）。
+ * 这里读最新的一个，超过 5 分钟视为过期。
+ */
+async function findQrDataUrl(): Promise<string | null> {
+  const fsMod = await import('node:fs');
+  const pathMod = await import('node:path');
+  // 从 control 配置里拿 lagrange 的 workdir，退回默认路径
+  const candidates = [
+    pathMod.resolve(process.cwd(), '..', 'lagrange', 'Lagrange.OneBot', 'bin', 'Release', 'net9.0', 'win-x64', 'publish'),
+    'D:\\Agent\\HarnessWorkPlace\\Deepseek\\lagrange\\Lagrange.OneBot\\bin\\Release\\net9.0\\win-x64\\publish',
+  ];
+  for (const dir of candidates) {
+    try {
+      if (!fsMod.existsSync(dir)) continue;
+      const files = fsMod.readdirSync(dir).filter((f) => f.startsWith('qr-') && f.endsWith('.png'));
+      if (files.length === 0) continue;
+      const withTime = files.map((f) => ({ f, t: fsMod.statSync(pathMod.join(dir, f)).mtimeMs }));
+      withTime.sort((a, b) => b.t - a.t);
+      const newest = withTime[0];
+      if (Date.now() - newest.t > 5 * 60 * 1000) continue; // 过期
+      const buf = fsMod.readFileSync(pathMod.join(dir, newest.f));
+      return `data:image/png;base64,${buf.toString('base64')}`;
+    } catch {
+      // 继续试下一个候选路径
+    }
+  }
+  return null;
+}
 // ── 控制面板前端（单文件 HTML，无外部依赖） ──
 const PANEL_HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -235,6 +286,14 @@ const PANEL_HTML = `<!DOCTYPE html>
   button.stop { background:var(--bad); }
   button:disabled { opacity:.35; cursor:not-allowed; }
   .hint { font-size:12px; color:var(--muted); }
+  .bulk { display:flex; gap:12px; margin-top:18px; }
+  .bulk button { flex:1; border:none; border-radius:10px; padding:12px 0; cursor:pointer; font-size:14px; font-weight:700; }
+  .bulk-start { background:var(--accent); color:#0f172a; }
+  .bulk-stop { background:#475569; color:#e2e8f0; }
+  .qrwrap { background:var(--card); border-radius:12px; padding:16px; margin-top:16px; }
+  .qrtitle { font-size:13px; color:var(--muted); margin-bottom:12px; }
+  .qrbox { display:flex; align-items:center; justify-content:center; min-height:240px; background:#334155; border-radius:8px; }
+  .qrbox img { width:220px; height:220px; image-rendering:pixelated; }
   .toast { position:fixed; bottom:20px; right:20px; background:var(--card); border:1px solid var(--accent); border-radius:10px; padding:12px 16px; font-size:13px; opacity:0; transform:translateY(10px); transition:.25s; max-width:340px; }
   .toast.show { opacity:1; transform:none; }
 </style>
@@ -243,6 +302,17 @@ const PANEL_HTML = `<!DOCTYPE html>
 <h1>鲸奈 · 控制面板</h1>
 <div class="sub">监控 + 启停四个组件 · 每 3 秒自动刷新</div>
 <div class="grid" id="grid"></div>
+
+<div class="bulk">
+  <button class="bulk-start" onclick="allStart()">一键全部启动</button>
+  <button class="bulk-stop" onclick="allStop()">全部停止</button>
+</div>
+
+<div class="qrwrap">
+  <div class="qrtitle">登录二维码（协议端启动后自动出现）</div>
+  <div class="qrbox"><img id="qrimg" alt="" style="display:none"><span id="qrhint">等待二维码…</span></div>
+</div>
+
 <div class="toast" id="toast"></div>
 <script>
 const COMPONENTS = [
@@ -307,6 +377,46 @@ async function act(component, action) {
   refresh();
 }
 
+async function allStart() {
+  toast("正在启动全部组件…");
+  for (const k of ["sign","lagrange","bot","tts"]) {
+    try { await fetch("/api/control/" + k + "/start", { method:"POST" }); } catch {}
+  }
+  toast("已触发全部启动");
+  setTimeout(refresh, 2000);
+}
+
+async function allStop() {
+  toast("正在停止全部组件…");
+  for (const k of ["bot","lagrange","tts","sign"]) {
+    try { await fetch("/api/control/" + k + "/stop", { method:"POST" }); } catch {}
+  }
+  toast("已触发全部停止");
+  setTimeout(refresh, 2000);
+}
+
+// 二维码：读后端 /api/qrcode，用 blob 显示
+let lastQr = "";
+async function refreshQr() {
+  try {
+    const r = await fetch("/api/qrcode");
+    const j = await r.json();
+    const img = document.getElementById("qrimg");
+    const hint = document.getElementById("qrhint");
+    if (!j.ok || !j.dataUrl) {
+      img.style.display = "none";
+      hint.style.display = "";
+      hint.textContent = j.reason || "等待二维码…";
+      return;
+    }
+    if (j.dataUrl === lastQr) return;
+    lastQr = j.dataUrl;
+    img.src = j.dataUrl;
+    img.style.display = "";
+    hint.style.display = "none";
+  } catch {}
+}
+
 let t;
 function toast(msg) {
   const e = document.getElementById('toast');
@@ -317,7 +427,9 @@ function toast(msg) {
 }
 
 refresh();
+refreshQr();
 setInterval(refresh, 3000);
+setInterval(refreshQr, 2500);
 </script>
 </body>
 </html>`;
