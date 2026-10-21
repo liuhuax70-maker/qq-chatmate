@@ -35,3 +35,4 @@ Thumbs.db
 
 # 启动器构建产物（用 launcher/build.bat 生成）
 launcher/*.exe
+launcher/qinai-*.exe

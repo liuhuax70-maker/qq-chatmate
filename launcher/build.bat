@@ -1,45 +1,52 @@
 @echo off
-chcp 65001 >nul
-REM ─────────────────────────────────────────────────────────
-REM  编译启动器为 .exe（单文件、零依赖）
-REM
-REM  用 Windows 自带的 .NET Framework 4 编译器，不需要装 SDK。
-REM  产物：
-REM    鲸奈启动器.exe  —— 图形界面版（双击启动）
-REM    鲸奈状态.exe    —— 命令行版（查状态/启动/停止）
-REM ─────────────────────────────────────────────────────────
 setlocal
+REM =========================================================
+REM  Build launcher exe (single file, zero dependency)
+REM  Uses Windows built-in .NET Framework 4 compiler (csc.exe)
+REM
+REM  Output:
+REM    qinai-launcher.exe  - GUI version (double-click)
+REM    qinai-status.exe    - console version (status/start/stop)
+REM =========================================================
 
 set "HERE=%~dp0"
 set "CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 if not exist "%CSC%" set "CSC=%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe"
 if not exist "%CSC%" (
-  echo [错误] 找不到 C# 编译器 csc.exe
-  echo        需要 .NET Framework 4（Windows 自带，若缺失请安装）
+  echo [ERROR] csc.exe not found. Need .NET Framework 4.
+  pause
   exit /b 1
 )
 
-echo [1/2] 编译图形界面版…
-"%CSC%" /nologo /target:winexe /out:"%HERE%鲸奈启动器.exe" ^
-  /reference:System.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll ^
-  "%HERE%Launcher.cs"
-if errorlevel 1 (
-  echo [失败] 图形界面版编译失败
+set "SRC=%HERE%Launcher.cs"
+if not exist "%SRC%" (
+  echo [ERROR] Launcher.cs not found in %HERE%
+  pause
   exit /b 1
 )
 
-echo [2/2] 编译命令行版…
-"%CSC%" /nologo /target:exe /out:"%HERE%鲸奈状态.exe" ^
-  /reference:System.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll ^
-  "%HERE%Launcher.cs"
+set "COMMON=/nologo /reference:System.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll"
+
+echo [1/2] Building GUI version...
+"%CSC%" /target:winexe /out:"%HERE%qinai-launcher.exe" %COMMON% "%SRC%"
 if errorlevel 1 (
-  echo [失败] 命令行版编译失败
+  echo [FAILED] GUI build failed
+  pause
+  exit /b 1
+)
+
+echo [2/2] Building console version...
+"%CSC%" /target:exe /out:"%HERE%qinai-status.exe" %COMMON% "%SRC%"
+if errorlevel 1 (
+  echo [FAILED] console build failed
+  pause
   exit /b 1
 )
 
 echo.
-echo [完成] 已生成：
-echo    %HERE%鲸奈启动器.exe
-echo    %HERE%鲸奈状态.exe
+echo [DONE]
+echo    %HERE%qinai-launcher.exe
+echo    %HERE%qinai-status.exe
 echo.
+pause
 endlocal
