@@ -61,3 +61,32 @@ NapCat 是反向 WS 客户端，主动连机器人的 8080，与 Lagrange 的 re
    `Console.BufferWidth`，没有真实控制台就崩，ConPTY 也绕不过。
 
 NapCat 两者都没有：不做 ICMP 探测，可静默运行。
+---
+
+## 更新：GPU 崩溃修复（error_code=18）
+
+### 现象
+
+NapCat 启动 QQ 后，QQ 崩在 GPU：
+
+```
+GPU process launch failed: error_code=18
+FATAL: content\browser\gpu\gpu_data_manager_impl_private.cc:415 GPU process isn't usable. Goodbye.
+```
+
+### 根因
+
+error_code=18 是 Electron 沙箱隔离导致无法调用系统 GPU API，
+在无显卡 / 远程桌面 / 虚拟机环境常见。
+
+### 修复
+
+NapCatWinBootMain.exe 硬编码给 QQ 加 `--enable-logging`，没有 `--no-sandbox`。
+用二进制 patch 把 `--enable-logging`（UTF-16，偏移 20848，16字符/32字节）
+替换成 `--no-sandbox`（11字符/22字节，剩余填 null）。
+
+patch 脚本：`napcat\napcat\patch-gpu-fix.bat`（幂等，改动前备份 .bak）
+
+### 验证
+
+patch 后 QQ 不再崩 GPU，进程存活。
