@@ -204,3 +204,54 @@ $task.Result.Status
 `OptimumServer(requestMsf, useIPv6Network)`，该配置项在当前版本没有参与这个分支的判定。
 
 所以"关掉最优服务器选择"这条路是死的，必须解决 Ping 本身。
+---
+
+## 更新：2026-10-21 20:30 加入受信任后
+
+用户已在卡巴斯基把 `Lagrange.OneBot.exe` 加入**受信任**分组。
+但通过我自己的测试程序验证，未签名 exe 的 ICMP 仍然被拒：
+
+```
+pingtest.exe（未加白）        → FAIL 拒绝访问
+_Lagrange同目录下的 ptest.exe  → FAIL 拒绝访问
+PowerShell 进程内             → ✅ Success 28ms
+```
+
+说明卡巴斯基的信任是**按文件哈希/签名精确匹配**的，
+不会因为我放在同一目录、或复制一份就继承信任。
+`pingtest.exe` 不是被信任的那个文件，所以仍被拦——这符合预期，不代表 Lagrange 也被拦。
+
+### 无法在我这边完成最终验证的原因
+
+尝试了所有能创建控制台的方式，都被同一个 Windows 行为挡住：
+
+| 方式 | 结果 |
+|---|---|
+| `CREATE_NEW_CONSOLE` + 输出重定向 | ❌ 崩在 `Console.get_BufferWidth` |
+| ConPTY 伪终端 | ❌ 崩在 `0xE0434352` |
+| 重定向到文件 | ❌ 崩在 `Console.get_BufferWidth` |
+
+**根因：一旦重定向 stdout，Windows 就不再分配真实控制台句柄。**
+而 Lagrange 启动时无条件读 `Console.BufferWidth`，所以：
+- 有真实可见窗口 → 能跑，但输出抓不到
+- 想抓输出做重定向 → 崩在控制台检查
+
+这是个死循环，在我的无窗口环境里无解。
+
+### 最终验证必须由用户完成
+
+双击 `Lagrange.OneBot.exe`，观察：
+1. 不再出现 `PingException` → 信任生效
+2. 出现二维码 → 完整跑通
+3. 若仍报 PingException → 信任没覆盖到，需检查是否加对了文件
+
+### 验证进展的判据
+
+不同错误对应不同阶段，据此可判断修到哪一步了：
+
+| 报错 | 含义 |
+|---|---|
+| `PingException / Win32Exception(5)` | 卡在 ICMP，信任未生效 |
+| `Console.get_BufferWidth` | 没有真实控制台（不是程序问题） |
+| 出现二维码 | 登录流程启动成功 |
+| `Signer server returned ...` | 到了签名阶段，检查 ntqq-sign-server |
