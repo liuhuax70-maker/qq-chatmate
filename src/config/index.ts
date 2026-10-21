@@ -196,6 +196,15 @@ const ConfigSchema = z.object({
         timeoutMs: z.number().default(60000),
         // 语速因子：1.0 参考原速（偏慢），1.3 正常语速
         speed: z.number().default(1.3),
+        // 唱歌（念歌词）：用她的音色有节奏地念歌词，不是真唱
+        sing: z
+          .object({
+            enabled: z.boolean().default(true),
+            keywords: z.array(z.string()).default(['唱', '唱歌', '来一首', '唱首歌', '哼一个', '来段']),
+            // 她自己想唱的概率（需回复里有分行歌词）
+            probability: z.number().default(0.12),
+          })
+          .default({}),
         // 合成失败是否回退为文字（true = 回退，保证有回复）
         fallbackToText: z.boolean().default(true),
       })
@@ -234,6 +243,9 @@ const ConfigSchema = z.object({
               probability: z.number().default(0.35),
               topicsFile: z.string().optional(),
               fromMemory: z.boolean().default(true),
+              // 白天（8-22 点）更积极：门槛和概率都放宽
+              dayIdleHours: z.number().optional(),
+              dayProbability: z.number().optional(),
             })
             .default({}),
           care: z
@@ -242,6 +254,9 @@ const ConfigSchema = z.object({
               idleHours: z.number().default(5),
               probability: z.number().default(0.4),
               fromMemory: z.boolean().default(true),
+              // 白天（8-22 点）更积极
+              dayIdleHours: z.number().optional(),
+              dayProbability: z.number().optional(),
             })
             .default({}),
           morning: z
@@ -251,6 +266,16 @@ const ConfigSchema = z.object({
               lateWake: z.object({ probability: z.number().default(0.2), window: z.tuple([z.number(), z.number()]).default([9, 12]) }).default({}),
               delayMinutes: z.tuple([z.number(), z.number()]).default([5, 40]),
               skipProbability: z.number().default(0.25),
+              pauseAfterIgnores: z.number().default(2),
+              pauseDays: z.number().default(3),
+            })
+            .default({}),
+          afternoon: z
+            .object({
+              enabled: z.boolean().default(true),
+              // 下午好的时间窗口（小时）
+              window: z.tuple([z.number(), z.number()]).default([13, 17]),
+              skipProbability: z.number().default(0.3),
               pauseAfterIgnores: z.number().default(2),
               pauseDays: z.number().default(3),
             })

@@ -28,18 +28,34 @@ export interface ProactiveConfig {
       probability: number;
       topicsFile?: string;
       fromMemory: boolean;
+      /** 白天（8-22 点）的更积极门槛：静默多久后考虑 */
+      dayIdleHours?: number;
+      /** 白天的触发概率 */
+      dayProbability?: number;
     };
     care: {
       enabled: boolean;
       idleHours: number;
       probability: number;
       fromMemory: boolean;
+      /** 白天（8-22 点）的更积极门槛：静默多久后考虑 */
+      dayIdleHours?: number;
+      /** 白天的触发概率 */
+      dayProbability?: number;
     };
     morning: {
       enabled: boolean;
       wakeWindow: [number, number];
       lateWake: { probability: number; window: [number, number] };
       delayMinutes: [number, number];
+      skipProbability: number;
+      pauseAfterIgnores: number;
+      pauseDays: number;
+    };
+    afternoon: {
+      enabled: boolean;
+      /** 下午好的时间窗口（小时） */
+      window: [number, number];
       skipProbability: number;
       pauseAfterIgnores: number;
       pauseDays: number;
@@ -70,8 +86,12 @@ interface DailyState {
   wakeMinuteOfDay: number | null;
   /** 今晚道晚安的具体时刻（分钟数）。每天只决定一次。 */
   nightTargetMinute: number | null;
+  /** 今天发「下午好」的具体时刻（分钟数）。每天只决定一次。 */
+  afternoonMinute: number | null;
   /** 今天的早安是否已发 */
   morningSent: boolean;
+  /** 今天的下午好是否已发 */
+  afternoonSent: boolean;
   /** 今天的晚安是否已发 */
   nightSent: boolean;
   /** 今天主动开口次数 */
@@ -86,7 +106,7 @@ interface DailyState {
    * 已发出但还没被回复的问候（早安/晚安）。
    * 用户没回的话，过一会儿她会撒娇催一下。
    */
-  awaitingReply: { kind: 'morning' | 'night'; sentAt: number; teased: boolean } | null;
+  awaitingReply: { kind: 'morning' | 'afternoon' | 'night'; sentAt: number; teased: boolean } | null;
 }
 
 const STORAGE_KEY = 'proactive_daily_state';
@@ -215,7 +235,9 @@ export class ProactiveScheduler {
     const fresh: DailyState = {
       wakeMinuteOfDay: null,
       nightTargetMinute: null,
+      afternoonMinute: null,
       morningSent: false,
+      afternoonSent: false,
       nightSent: false,
       count: 0,
       ignoreStreak: 0,
@@ -254,10 +276,12 @@ export class ProactiveScheduler {
         ...this.state,
         day: this.todayKey(),
         morningSent: false,
+        afternoonSent: false,
         nightSent: false,
         count: 0,
         wakeMinuteOfDay: null,
         nightTargetMinute: null,
+      afternoonMinute: null,
         awaitingReply: null,
       };
       this.saveState();
@@ -292,9 +316,10 @@ export class ProactiveScheduler {
     if (Date.now() - this.lastProactiveAt < gapMs) return;
 
     // 依次尝试各个触发器（晚安已在上面处理）
-    // 优先级：撒娇（等回复）> 早安 > share/care/silence > 守约
+    // 优先级：撒娇（等回复）> 早安 > 下午好 > share/care/silence > 守约
     if (await this.tryTease(now)) return;
     if (await this.tryMorning(now)) return;
+    if (await this.tryAfternoon(now)) return;
     if (await this.tryShareOrCare(now)) return;
     if (await this.trySilence(now)) return;
     if (await this.tryPromise(now)) return;
@@ -425,6 +450,59 @@ export class ProactiveScheduler {
     return Math.floor(startMin + Math.random() * (endMin - startMin));
   }
 
+  // ── 触发器 1.5：下午好 ──────────────────────────────────
+
+  /**
+   * 下午的问候。跟早安一样，不是定时打卡：
+   * 每天只发一次，且有三成日子想不起来发。
+   */
+  private async tryAfternoon(now: Date): Promise<boolean> {
+    const c = this.cfg.triggers.afternoon;
+    if (!c.enabled || this.state.afternoonSent) return false;
+
+    // 还在睡就不发
+    if (this.sleep.isSleeping()) return false;
+
+    // 必须已经过了早安（不能早安还没发就下午好）
+    if (!this.state.morningSent) return false;
+
+    const [startH, endH] = c.window;
+    if (!this.inWindow(now.getHours(), c.window)) return false;
+
+    // 当天具体时刻每天只定一次，避免一进窗口就发
+    const nowMinute = now.getHours() * 60 + now.getMinutes();
+    const startMin = startH * 60;
+    const endMin = endH * 60;
+    if (this.state.afternoonMinute === null) {
+      this.state.afternoonMinute = Math.floor(startMin + Math.random() * (endMin - startMin));
+      this.saveState();
+      this.logger.info({ at: this.formatMinute(this.state.afternoonMinute) }, '今天的下午好时刻已决定');
+    }
+    if (nowMinute < this.state.afternoonMinute) return false;
+
+    if (Math.random() < c.skipProbability) {
+      this.state.afternoonSent = true;
+      this.saveState();
+      return false;
+    }
+
+    if (this.shouldPause(c.pauseAfterIgnores, c.pauseDays)) {
+      this.state.afternoonSent = true;
+      this.saveState();
+      return false;
+    }
+
+    const text = await this.generate('afternoon', [], this.pickTopics(2), this.recentMemories(3));
+    if (!text) return false;
+
+    await this.emit(text);
+    this.state.afternoonSent = true;
+    this.state.awaitingReply = { kind: 'afternoon', sentAt: Date.now(), teased: false };
+    this.saveState();
+    this.logger.info({ text }, '发送下午好');
+    return true;
+  }
+
   // ── 触发器 2：晚安 ──────────────────────────────────────
 
   private async tryNight(now: Date): Promise<boolean> {
@@ -525,8 +603,16 @@ export class ProactiveScheduler {
 
     const c = kind === 'share' ? share : care;
     const idleHours = (Date.now() - this.session.lastActiveAt) / 3_600_000;
-    if (idleHours < c.idleHours) return false;
-    if (Math.random() >= c.probability) return false;
+
+    // 白天更积极：分享和关心在白天（8-22 点）用更低的门槛，
+    // 因为她白天本来就更活跃、更想找人说话。深夜仍按原阈值，不吵你。
+    const hour = now.getHours();
+    const isDaytime = hour >= 8 && hour < 22;
+    const effectiveIdleHours = isDaytime && c.dayIdleHours ? c.dayIdleHours : c.idleHours;
+    const effectiveProbability = isDaytime && c.dayProbability ? c.dayProbability : c.probability;
+
+    if (idleHours < effectiveIdleHours) return false;
+    if (Math.random() >= effectiveProbability) return false;
 
     // 记忆素材：从长期记忆里拉几条最近的，让「分享/关心」有据可依
     let memoryHints: string[] = [];
@@ -557,6 +643,18 @@ export class ProactiveScheduler {
     return shuffled.slice(0, n);
   }
 
+  /** 取最近 n 条长期记忆（供下午好等触发器引用） */
+  private recentMemories(n: number): string[] {
+    try {
+      return this.store
+        .searchMemories(this.peerId, '', n)
+        .map((m) => m.content)
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
   // ── 触发器 5：守约提醒 ──────────────────────────────────
 
   private async tryPromise(now: Date): Promise<boolean> {
@@ -585,11 +683,11 @@ export class ProactiveScheduler {
   }
 
   private async generate(
-    kind: 'morning' | 'night' | 'silence' | 'share' | 'care' | 'tease' | 'promise',
+    kind: 'morning' | 'afternoon' | 'night' | 'silence' | 'share' | 'care' | 'tease' | 'promise',
     nightMessages: string[] = [],
     topics: string[] = [],
     memoryHints: string[] = [],
-    greetingKind?: 'morning' | 'night',
+    greetingKind?: 'morning' | 'afternoon' | 'night',
   ): Promise<string | null> {
     // 醒来时如果昨晚你发过消息，她会带着这个上下文说话
     const nightHint =
@@ -635,6 +733,20 @@ export class ProactiveScheduler {
         '- **道晚安之后要关心他一句**：让他早点睡、别熬太晚，或者问他今天怎么样',
         '- 关心要具体自然，别像家长说教',
         '- 傲娇式和直接式都行：可以嘴硬着关心，也可以直接说',
+        '- 一到两句话，总共不超过 35 字',
+      ].join('\n'),
+      afternoon: [
+        '现在是下午，闲下来了。',
+        '你想跟他打个招呼，顺便聊点轻松的。',
+        memoryHint,
+        topicsHint,
+        '',
+        '要求：',
+        '- 不要用「下午好」这个词开头，太公式化了',
+        '- 像下午摸鱼时随口找人聊天的状态',
+        '- 可以分享你刚看到/想到的有趣的事，或者问他下午在干嘛',
+        '- 心情好可以哼两句、可以说想吃东西了、可以犯困',
+        '- 傲娇式和直接式都行，看心情',
         '- 一到两句话，总共不超过 35 字',
       ].join('\n'),
       silence: [
