@@ -77,12 +77,35 @@ export class ControlPanel {
   }
 
   /** 探测四个组件状态 */
+  /** TTS 的详细状态（是否加载完成） */
+  private ttsDetail = '未运行';
+
   async status(): Promise<ComponentStatus[]> {
     const [lagrangeWs, signPort, ttsPort] = await Promise.all([
       canConnect(8080),   // 协议端连上主程序的 8080（reverse-ws）
       canConnect(this.cfg.signServer.port),
       canConnect(this.cfg.tts.port),
     ]);
+
+    // TTS 端口通了不代表模型加载完，顺手查一下 /health 的 loaded 字段
+    if (ttsPort) {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 1200);
+        let resp: Response;
+        try {
+          resp = await fetch(`http://127.0.0.1:${this.cfg.tts.port}/health`, { signal: ctrl.signal });
+        } finally {
+          clearTimeout(t);
+        }
+        const j = (await resp.json()) as { loaded?: boolean; device?: string };
+        this.ttsDetail = j?.loaded ? `服务就绪（${j.device ?? 'cpu'}）` : '模型加载中…';
+      } catch {
+        this.ttsDetail = '服务就绪';
+      }
+    } else {
+      this.ttsDetail = '未运行';
+    }
 
     // Lagrange：进程在 且 已连上 8080
     const lagrangeProc = await this.findProcess('Lagrange.OneBot');
