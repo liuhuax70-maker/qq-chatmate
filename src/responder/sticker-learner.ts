@@ -1,6 +1,37 @@
 import type { Logger } from 'pino';
 import type { Store } from '../store/db';
 
+/**
+ * 把表情 URL 归一化成稳定标识。
+ *
+ * QQ 的图片链接带 rkey 签名参数，同一张图每次发过来 URL 都不同，
+ * 直接拿 URL 当 key 会导致"同一张表情被反复问"。
+ * 这里提取 fileid（稳定）作为判定依据。
+ */
+export function stickerKey(url: string): string {
+  try {
+    const idx = url.indexOf('fileid=');
+    if (idx >= 0) {
+      let fid = url.slice(idx + 7);
+      const amp = fid.indexOf('&');
+      if (amp >= 0) fid = fid.slice(0, amp);
+      fid = decodeURIComponent(fid);
+      // QQ 的 fileid 前半段是图片内容哈希（稳定），后半段是每次变化的加密签名。
+      // 只取前 40 字符作为「这是同一张图」的判定依据。
+      return 'fid:' + fid.slice(0, 40);
+    }
+    // 没有 fileid（比如 qpic.cn 永久链接）→ 去掉时效参数后用整条 URL
+    const u = new URL(url);
+    const keep = new URLSearchParams();
+    for (const [k, v] of u.searchParams) {
+      if (k !== 'rkey' && k !== 't' && k !== 'sign') keep.set(k, v);
+    }
+    u.search = keep.toString();
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
 export interface LearnedSticker {
   /** 图片 URL（作为唯一标识） */
   url: string;
@@ -64,7 +95,7 @@ export class StickerLearner {
       const raw = this.store.getKv(LEARNED_KEY);
       if (raw) {
         const arr = JSON.parse(raw) as LearnedSticker[];
-        for (const s of arr) this.learned.set(s.url, s);
+        for (const s of arr) this.learned.set(stickerKey(s.url), s);
       }
       const pend = this.store.getKv(PENDING_KEY);
       if (pend) this.pending = JSON.parse(pend) as PendingAsk;
@@ -88,7 +119,7 @@ export class StickerLearner {
 
   /** 是否已经认识这张图 */
   knows(url: string): boolean {
-    return this.learned.has(url);
+    return this.learned.has(stickerKey(url));
   }
 
   /** 是否正在等待用户回答 */
@@ -110,12 +141,13 @@ export class StickerLearner {
    *   - 'ignore'    不处理（比如不是表情包）
    */
   onReceivedImage(url: string, isSticker: boolean): 'known' | 'ask' | 'already-asked' | 'ignore' {
-    if (this.learned.has(url)) return 'known';
+    const key = stickerKey(url);
+    if (this.learned.has(key)) return 'known';
 
     // 只学表情包，不学普通照片（用户发生活照时不该问"这张什么意思"）
     if (!isSticker) return 'ignore';
 
-    if (this.askedUrls.has(url)) return 'already-asked';
+    if (this.askedUrls.has(key)) return 'already-asked';
 
     // 已经有一个待回答的，先不追问第二张
     if (this.pending) return 'already-asked';
@@ -125,7 +157,7 @@ export class StickerLearner {
 
   /** 记录"已经问了"，并进入等待状态 */
   markAsked(url: string, question: string): void {
-    this.askedUrls.add(url);
+    this.askedUrls.add(stickerKey(url));
     this.pending = { url, askedAt: Date.now(), question };
     this.save();
     this.logger.info({ url: url.slice(0, 60) }, '不认识这张表情，准备问她');
@@ -173,7 +205,7 @@ export class StickerLearner {
       source: 'user',
     };
 
-    this.learned.set(pending.url, learned);
+    this.learned.set(stickerKey(pending.url), learned);
     this.pending = null;
     this.save();
     this.logger.info({ meaning, scenes }, '学会了一张新表情');
@@ -182,7 +214,7 @@ export class StickerLearner {
 
   /** 记录使用 */
   markUsed(url: string): void {
-    const s = this.learned.get(url);
+    const s = this.learned.get(stickerKey(url));
     if (!s) return;
     s.usedCount++;
     s.lastUsedAt = Date.now();
