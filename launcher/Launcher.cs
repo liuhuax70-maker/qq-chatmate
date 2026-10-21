@@ -523,8 +523,8 @@ namespace QQChatmateLauncher
             NapCatDir = napDir;
             if (!Directory.Exists(napDir)) return "找不到 NapCat 目录：" + napDir;
 
-            string launcher = Path.Combine(napDir, @"napcat\launcher-user.bat");
-            if (!File.Exists(launcher)) return "找不到 launcher-user.bat：" + launcher;
+            string launcher = Path.Combine(napDir, @"napcat\launcher-napcat-qq.bat");
+            if (!File.Exists(launcher)) return "找不到 launcher-napcat-qq.bat：" + launcher;
 
             // NapCat 会拉起 QQ 并注入，需要真实 GUI（QQ 登录窗口）。
             // 这里用 start 开一个最小化窗口跑 launcher。
