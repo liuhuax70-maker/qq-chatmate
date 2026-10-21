@@ -112,3 +112,41 @@ System.IO.IOException: 句柄无效。
 ```
 
 `launcher/patch-lagrange-config.bat` 可以一键校正这两项（幂等）。
+---
+
+## 更新：2026-10-21 20:10 加例外后
+
+用户已在卡巴斯基里给 `Lagrange.OneBot.exe` 加了例外。加完之后立即验证：
+
+```
+=== 同步 Ping ===
+✅ .NET Ping: Success 31ms
+=== 异步 PingAsync（Lagrange 用的就是这个）===
+✅ PingAsync: Success 29ms
+```
+
+两项都通了，说明**例外确实生效**。
+
+注意：这只能验证"当前 PowerShell 进程"的 ICMP 能力正常。
+Lagrange 自己的进程是否也被放行，需要实际启动它才能确认——
+不同进程的应用控制规则是独立评估的。
+
+因此下一步是：双击 `Lagrange.OneBot.exe`，观察是否还报 `PingException`。
+
+如果仍报错，说明例外没覆盖到它，需要检查：
+- 例外加的是不是同一个路径的 exe
+- 卡巴斯基是否把该 exe 归到别的分组（比如"未识别程序"）而那个分组仍受限
+- 是否有第二层拦截（Windows 防火墙出站规则、其它安全软件）
+
+## 验证 ICMP 能力的可复用方法
+
+```powershell
+# 同步
+$p = New-Object System.Net.NetworkInformation.Ping
+$p.Send("223.5.5.5", 2000)
+
+# 异步（Lagrange 内部用的就是这个）
+$task = (New-Object System.Net.NetworkInformation.Ping).SendPingAsync("223.5.5.5", 2000)
+$task.Wait(3000) | Out-Null
+$task.Result.Status
+```
