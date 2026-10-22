@@ -183,7 +183,7 @@ export class TtsClient {
         resp = await fetch(`${this.cfg.serverUrl}/tts`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json; charset=utf-8' },
-          body: JSON.stringify({ text: clean, speed: this.cfg.speed ?? 1.3 }),
+          body: JSON.stringify({ text: clean, speed: this.cfg.speed ?? 1.6 }),
           signal: controller.signal,
         });
       } finally {
