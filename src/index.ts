@@ -211,8 +211,16 @@ async function main(): Promise<void> {
       }
 
       if (!processed.text) {
-        logger.warn('回复为空，放弃发送');
-        session.recordAssistant('（走神了）');
+        // 兜底：绝不能因为模型返回空就"消失"。至少回一个短反应，保证用户一定有回应。
+        logger.warn('回复为空，走兜底');
+        const fallbacks = ['嗯', '在', '6', '干嘛', '说', '听着呢', '嗯嗯'];
+        const fb = fallbacks[Math.floor(Math.random() * fallbacks.length)];
+        session.recordAssistant(fb);
+        try {
+          for (const seg of post.split(fb)) {
+            await adapter.sendPrivateMessageSegments(userId, post.toSegments(seg));
+          }
+        } catch { /* 发送失败也无所谓，至少记录过了 */ }
         return;
       }
 
@@ -426,9 +434,16 @@ async function main(): Promise<void> {
               return;
             }
 
-            // 纯表情且已经认识 → 可以正常聊；纯表情但不认识/问过了 → 不回
+            // 纯表情且已经认识 → 正常聊；纯表情但不认识/问过了 → 也要给个反应，不能不回
             if (isPureStickerMsg(segs)) {
               session.recordUser('[发了张表情]');
+              // 已经问过但没学到的表情：给她一个短反应，保证用户一定有回应
+              if (text) {
+                const verdict = proactive.sleep.onUserMessage(text);
+                if (verdict.respond) {
+                  void handleReply(uid, '[发了张表情]');
+                }
+              }
               return;
             }
           }
