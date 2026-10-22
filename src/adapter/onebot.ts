@@ -303,14 +303,24 @@ export class OneBotAdapter extends EventEmitter {
   /**
    * 发送私聊消息，支持混合消息段（文本 + QQ 表情）。
    * segments 由 responder 的 emoji 模块解析产生。
+   *
+   * replyTo：要引用的消息 id（OneBot 11 的 reply 段）。
+   * 带上它，QQ 客户端会显示成「引用回复」，能看出是针对哪一条回的。
    */
   async sendPrivateMessageSegments(
     userId: string | number,
     segments: OneBotMessageSegment[],
+    replyTo?: number | string,
   ): Promise<{ message_id?: number } | undefined> {
+    const message: OneBotMessageSegment[] = [];
+    // reply 段必须放在消息链最前面才生效
+    if (replyTo !== undefined && replyTo !== null && String(replyTo) !== '') {
+      message.push({ type: 'reply', data: { id: replyTo } });
+    }
+    message.push(...segments);
     return this.call('send_private_msg', {
       user_id: Number(userId),
-      message: segments,
+      message,
     });
   }
 

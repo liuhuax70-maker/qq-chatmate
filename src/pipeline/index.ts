@@ -21,7 +21,7 @@ export interface PipelineConfig {
 }
 
 export type PipelineDecision =
-  | { action: 'reply'; userId: string; text: string; mergedCount: number }
+  | { action: 'reply'; userId: string; text: string; mergedCount: number; messageId?: number | string }
   | { action: 'drop'; reason: string };
 
 interface BufferEntry {
@@ -29,6 +29,8 @@ interface BufferEntry {
   texts: string[];
   timer: NodeJS.Timeout;
   firstAt: number;
+  /** 缓冲区里第一条消息的 id，用于回复时引用 */
+  firstMessageId?: number | string;
 }
 
 /**
@@ -124,16 +126,24 @@ export class MessagePipeline {
 
     // ⑤ 提取文本
     const text = extractText(msg.message ?? []);
+    const messageId = msg.message_id;
     if (!text) {
-      onReady({ action: 'drop', reason: 'empty-text' });
+      // 纯表情/纯图片：不带文本也要往下走，让上层处理
+      // （上层会走表情学习流程或给一个短反应，绝不能在这里静默丢弃）
+      onReady({ action: 'reply', userId, text: '', mergedCount: 1, messageId });
       return;
     }
 
     // ⑥ 分片合并缓冲
-    this.enqueue(userId, text, onReady);
+    this.enqueue(userId, text, onReady, messageId);
   }
 
-  private enqueue(userId: string, text: string, onReady: (d: PipelineDecision) => void): void {
+  private enqueue(
+    userId: string,
+    text: string,
+    onReady: (d: PipelineDecision) => void,
+    messageId?: number | string,
+  ): void {
     const existing = this.buffers.get(userId);
     const now = Date.now();
 
@@ -166,24 +176,30 @@ export class MessagePipeline {
       userId,
       texts: [text],
       firstAt: now,
+      firstMessageId: messageId,
       timer: setTimeout(() => this.flush(userId, onReady), this.cfg.mergeWindowMs),
     };
     this.buffers.set(userId, entry);
   }
 
   private flushNow(entry: BufferEntry, onReady: (d: PipelineDecision) => void): void {
-    this.processMerged(entry.userId, entry.texts, onReady);
+    this.processMerged(entry.userId, entry.texts, onReady, entry.firstMessageId);
   }
 
   private flush(userId: string, onReady: (d: PipelineDecision) => void): void {
     const entry = this.buffers.get(userId);
     if (!entry) return;
     this.buffers.delete(userId);
-    this.processMerged(userId, entry.texts, onReady);
+    this.processMerged(userId, entry.texts, onReady, entry.firstMessageId);
   }
 
   /** 合并后的处理主逻辑 */
-  private processMerged(userId: string, texts: string[], onReady: (d: PipelineDecision) => void): void {
+  private processMerged(
+    userId: string,
+    texts: string[],
+    onReady: (d: PipelineDecision) => void,
+    messageId?: number | string,
+  ): void {
     const merged = texts.join('\n');
     const count = texts.length;
     const now = Date.now();
@@ -227,7 +243,7 @@ export class MessagePipeline {
     }
     this.recentReplyTimes = recentReplies;
 
-    onReady({ action: 'reply', userId, text: merged, mergedCount: count });
+    onReady({ action: 'reply', userId, text: merged, mergedCount: count, messageId });
   }
 
   markReplied(): void {

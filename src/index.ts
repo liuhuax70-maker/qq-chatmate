@@ -185,7 +185,11 @@ async function main(): Promise<void> {
   wakeCountRef.current = () => proactive.sleep.getWakeCount();
 
   // ── 核心：收到消息 → 决策 → 回复 ────────────────────────
-  const handleReply = async (userId: string, text: string): Promise<void> => {
+  const handleReply = async (
+    userId: string,
+    text: string,
+    replyTo?: number | string,
+  ): Promise<void> => {
     const release = await session.acquireLock();
     try {
       session.recordUser(text);
@@ -218,7 +222,7 @@ async function main(): Promise<void> {
         session.recordAssistant(fb);
         try {
           for (const seg of post.split(fb)) {
-            await adapter.sendPrivateMessageSegments(userId, post.toSegments(seg));
+            await adapter.sendPrivateMessageSegments(userId, post.toSegments(seg), replyTo);
           }
         } catch { /* 发送失败也无所谓，至少记录过了 */ }
         return;
@@ -309,7 +313,12 @@ async function main(): Promise<void> {
         for (let i = 0; i < segments.length; i++) {
           if (i > 0) await sleep(post.segmentPauseMs());
           const msgSegments = post.toSegments(segments[i]);
-          await adapter.sendPrivateMessageSegments(userId, msgSegments);
+          // 只有第一段带 reply 引用——多段都带会变成连环引用，很怪
+          await adapter.sendPrivateMessageSegments(
+            userId,
+            msgSegments,
+            i === 0 ? replyTo : undefined,
+          );
         }
       }
 
@@ -408,6 +417,7 @@ async function main(): Promise<void> {
           const text = extractText(segs);
           const images = extractImages(segs);
           const uid = String((event as any).user_id);
+          const evMsgId = (event as any).message_id as number | string | undefined;
 
           // 1) 收到表情包
           if (images.length > 0) {
@@ -423,8 +433,13 @@ async function main(): Promise<void> {
               setTimeout(() => {
                 void (async () => {
                   await sleep(delay);
-                  for (const seg of post.split(question)) {
-                    await adapter.sendPrivateMessageSegments(uid, post.toSegments(seg));
+                  const qSegs = post.split(question);
+                  for (let i = 0; i < qSegs.length; i++) {
+                    await adapter.sendPrivateMessageSegments(
+                      uid,
+                      post.toSegments(qSegs[i]),
+                      i === 0 ? evMsgId : undefined,
+                    );
                   }
                   session.recordUser('[发了张表情]');
                   session.recordAssistant(question);
@@ -441,7 +456,7 @@ async function main(): Promise<void> {
               if (text) {
                 const verdict = proactive.sleep.onUserMessage(text);
                 if (verdict.respond) {
-                  void handleReply(uid, '[发了张表情]');
+                  void handleReply(uid, '[发了张表情]', evMsgId);
                 }
               }
               return;
@@ -468,7 +483,7 @@ async function main(): Promise<void> {
             // 被吵醒后的回复要额外慢一点（人刚从睡梦里醒过来）
             if (verdict.delayMs > 0) {
               logger.info({ delayMs: verdict.delayMs }, '被吵醒，延迟回复');
-              setTimeout(() => void handleReply(uid, text), verdict.delayMs);
+              setTimeout(() => void handleReply(uid, text, evMsgId), verdict.delayMs);
               return;
             }
           }
@@ -476,7 +491,7 @@ async function main(): Promise<void> {
 
         pipeline.accept(event, (decision) => {
           if (decision.action === 'reply') {
-            void handleReply(decision.userId, decision.text);
+            void handleReply(decision.userId, decision.text, decision.messageId);
           }
         });
         return;
