@@ -155,10 +155,24 @@ export function startHttpServer(opts: HttpOptions, ctx: HttpContext, logger: Log
       if (url === '/api/qrcode' && req.method === 'GET') {
         void (async () => {
           try {
+            // 先看是否已登录，给准确的提示
+            let connected = false;
+            try {
+              const h = await fetch('http://127.0.0.1:3000/healthz', { signal: AbortSignal.timeout(2000) });
+              const j = (await h.json()) as { status?: string };
+              connected = j?.status === 'connected';
+            } catch { /* ignore */ }
+
+            if (connected) {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, reason: '✅ 已登录，机器人已连上' }));
+              return;
+            }
+
             const qr = await findQrDataUrl();
             if (!qr) {
               res.writeHead(200, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ ok: false, reason: '等待二维码…（先启动协议端）' }));
+              res.end(JSON.stringify({ ok: false, reason: '等待二维码…（先启动 NapCat）' }));
               return;
             }
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -239,6 +253,35 @@ async function findQrDataUrl(): Promise<string | null> {
 
   // NapCat 的二维码位置（优先）
   const napcatQr = pathMod.resolve(process.cwd(), '..', 'napcat', 'napcat', 'cache', 'qrcode.png');
+
+  // 机器人是否已连上协议端（最权威的"登录成功"判据）
+  let connected = false;
+  try {
+    const h = await fetch('http://127.0.0.1:3000/healthz', { signal: AbortSignal.timeout(2000) });
+    const j = (await h.json()) as { status?: string };
+    connected = j?.status === 'connected';
+  } catch { /* ignore */ }
+
+  // 已登录 → 不需要二维码
+  if (connected) return null;
+
+  // NapCat 是否在跑：QQ 进程存在（不用 wmic，部分环境没有）
+  let napcatAlive = false;
+  try {
+    const { execSync } = await import('node:child_process');
+    for (const img of ['QQ.exe', 'QQEX.exe']) {
+      try {
+        const out = execSync(`tasklist /FI "IMAGENAME eq ${img}" /FO CSV /NH`, {
+          encoding: 'utf8', timeout: 6000, windowsHide: true,
+        });
+        if (out.toLowerCase().includes(img.toLowerCase())) { napcatAlive = true; break; }
+      } catch { /* 继续试下一个 */ }
+    }
+  } catch { /* ignore */ }
+
+  // NapCat 没在跑 → 不返回旧码（否则"已停止却还能扫码"）
+  if (!napcatAlive) return null;
+
   try {
     if (fsMod.existsSync(napcatQr)) {
       const age = Date.now() - fsMod.statSync(napcatQr).mtimeMs;

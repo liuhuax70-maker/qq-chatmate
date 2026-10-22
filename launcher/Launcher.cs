@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -262,8 +262,13 @@ namespace QQChatmateLauncher
         /// </summary>
         public static bool TestLagrange()
         {
-            // NapCat Shell 模式会拉起 QQ.exe，同时 NapCat 的 node 也在跑
-            foreach (string img in new[] { "QQ.exe", "QQEX.exe", "node.exe" })
+            // 判据优先级：
+            //   1. 机器人 healthz = connected → 协议端肯定在线（最权威）
+            //   2. QQ 进程存在 → NapCat 可能正在启动/登录中
+            // 注意：不用 wmic 查命令行（部分环境没有 wmic）。
+            if (IsProtocolConnected()) return true;
+
+            foreach (string img in new[] { "QQ.exe", "QQEX.exe" })
             {
                 try
                 {
@@ -278,16 +283,11 @@ namespace QQChatmateLauncher
                     {
                         string o = p.StandardOutput.ReadToEnd();
                         p.WaitForExit(6000);
-                        if (o.IndexOf(img, StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            // node.exe 太泛了（机器人也是 node），这里只认 QQ 系
-                            if (img.StartsWith("QQ")) return true;
-                        }
+                        if (o.IndexOf(img, StringComparison.OrdinalIgnoreCase) >= 0) return true;
                     }
                 }
                 catch { }
             }
-            // 兜底：8080 有反向 WS 连接说明协议端在线
             return false;
         }
         public static bool TestSignContainer()
@@ -341,7 +341,10 @@ namespace QQChatmateLauncher
         }
         /// <summary>
         /// 找协议端生成的二维码图片。Lagrange 登录前会把二维码写到
-        /// publish 目录下的 qr-{uin}.png，直接读它比解析控制台可靠得多。
+        /// <summary>
+        /// 找到 NapCat 当前有效的二维码。
+        /// 只有在 NapCat 活着且二维码文件新鲜时才返回，否则返回 null。
+        /// （NapCat 停了还显示旧码，会造成"已停止却还能扫码"）
         /// </summary>
         public static string FindQrCode()
         {
@@ -351,6 +354,12 @@ namespace QQChatmateLauncher
                 string napcatQr = Path.Combine(BaseDir, @"napcat\napcat\cache\qrcode.png");
                 if (File.Exists(napcatQr))
                 {
+                    // 已登录成功 → 不再显示二维码（扫码已完成）
+                    if (IsProtocolConnected()) return null;
+
+                    // NapCat 没在跑 → 不显示旧码（否则"已停止却还能扫码"）
+                    if (!TestLagrange()) return null;
+
                     var t = File.GetLastWriteTime(napcatQr);
                     // 二维码有效期约 5 分钟
                     if ((DateTime.Now - t).TotalMinutes < 5) return napcatQr;
@@ -375,6 +384,55 @@ namespace QQChatmateLauncher
                 return null;
             }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// 判断协议端是否已连上机器人。
+        /// 直接查机器人的 /healthz（最权威），失败时退回 netstat 判断。
+        /// </summary>
+        public static bool IsProtocolConnected()
+        {
+            // 首选：问机器人自己（它的 WS 连接状态最准确）
+            try
+            {
+                var req = (System.Net.HttpWebRequest)System.Net.HttpWebRequest.Create("http://127.0.0.1:3000/healthz");
+                req.Timeout = 2000;
+                req.Method = "GET";
+                using (var resp = req.GetResponse())
+                using (var sr = new System.IO.StreamReader(resp.GetResponseStream(), System.Text.Encoding.UTF8))
+                {
+                    string body = sr.ReadToEnd();
+                    if (body.IndexOf("\"connected\"", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                    if (body.IndexOf("\"disconnected\"", StringComparison.OrdinalIgnoreCase) >= 0) return false;
+                }
+            }
+            catch { /* 机器人可能没起，退回 netstat */ }
+
+            // 兜底：netstat 看 8080 是否有 Established
+            try
+            {
+                var psi = new ProcessStartInfo("netstat", "-ano -p TCP")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using (var p = Process.Start(psi))
+                {
+                    string o = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(6000);
+                    foreach (string raw in o.Split('\n'))
+                    {
+                        string line = raw.Trim();
+                        if (!line.StartsWith("TCP")) continue;
+                        if (!line.Contains("127.0.0.1:8080")) continue;
+                        if (line.IndexOf("ESTABLISHED", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
         }
         /// <summary>
         /// 关掉启动器拉起的全部子进程（含进程树）。
@@ -1022,16 +1080,21 @@ namespace QQChatmateLauncher
 
                 if (qr == null)
                 {
-                    // 没二维码：要么协议端没启动，要么已经登录成功
-                    bool lagUp = Program.TestLagrange();
-                    if (lagUp)
+                    // 没二维码：可能是已登录，也可能协议端没启动
+                    if (Program.IsProtocolConnected())
                     {
-                        _qrHint.Text = "✅ 已登录（无需扫码）";
+                        _qrHint.Text = "✅ 已登录，机器人已连上";
                         _qrHint.ForeColor = GreenColor;
+                    }
+                    else if (Program.TestLagrange())
+                    {
+                        // NapCat 在跑但还没连上：可能是登录中，也可能是登录失败了
+                        _qrHint.Text = "等待二维码…（NapCat 启动中）";
+                        _qrHint.ForeColor = MutedColor;
                     }
                     else
                     {
-                        _qrHint.Text = "等待二维码…（先启动协议端）";
+                        _qrHint.Text = "等待二维码…（先启动 NapCat）";
                         _qrHint.ForeColor = MutedColor;
                     }
                     _qrBox.Image = null;
@@ -1075,8 +1138,7 @@ namespace QQChatmateLauncher
 
                 _lastQrPath = qr;
                 _qrHint.Text = "用手机 QQ 扫码登录（码 5 分钟内有效）";
-                _qrHint.ForeColor = BlueColor;
-            }
+                _qrHint.ForeColor = BlueColor;            }
             catch
             {
                 _qrHint.Text = "二维码读取失败，稍后重试";
