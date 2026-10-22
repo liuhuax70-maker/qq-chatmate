@@ -375,6 +375,12 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       logger.error({ err: (err as Error).message }, '生成回复失败');
+      // ⚠️ 绝不能让异常变成"已读不回"。至少发一个短反应。
+      try {
+        const fb = ['嗯', '在', '刚走神了', '你说', '6'];
+        const pick = fb[Math.floor(Math.random() * fb.length)];
+        await adapter.sendPrivateMessageSegments(userId, post.toSegments(pick), replyTo);
+      } catch { /* 发送也失败就真的没办法了 */ }
     } finally {
       release();
     }
@@ -474,16 +480,19 @@ async function main(): Promise<void> {
           if (text) {
             const verdict = proactive.sleep.onUserMessage(text);
             if (!verdict.respond) {
-              logger.info(
+              // 理论上不会走到这（睡眠机制已改为必回），保留兜底：绝不静默
+              logger.warn(
                 { chars: text.length, reason: verdict.reason, phase: proactive.sleep.phase() },
-                '她在睡觉/刚被吵醒，这条先不回',
+                '睡眠判定为不回（不应发生），强制回复',
               );
+              void handleReply(uid, text, evMsgId);
               return;
             }
-            // 被吵醒后的回复要额外慢一点（人刚从睡梦里醒过来）
+            // 被吵醒后慢一点，但最多 10 秒——不能让你干等一两分钟
             if (verdict.delayMs > 0) {
-              logger.info({ delayMs: verdict.delayMs }, '被吵醒，延迟回复');
-              setTimeout(() => void handleReply(uid, text, evMsgId), verdict.delayMs);
+              const wait = Math.min(verdict.delayMs, 10_000);
+              logger.info({ delayMs: verdict.delayMs, actualWaitMs: wait }, '被吵醒，稍慢回复');
+              setTimeout(() => void handleReply(uid, text, evMsgId), wait);
               return;
             }
           }

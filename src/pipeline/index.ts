@@ -204,44 +204,12 @@ export class MessagePipeline {
     const count = texts.length;
     const now = Date.now();
 
-    // 记录用户消息频率（刷屏检测，窗口可配）
+    // ⚠️ 用户明确要求：他发了消息就必须有回复。
+    // 所以节流/冷却/刷屏跳过全部不生效——那些"智能沉默"在这里是 bug，不是特性。
+    // 仍然记录频率，方便日志观察，但绝不用来丢消息。
     const floodWindow = this.cfg.throttle.floodWindowSeconds * 1000;
     for (let i = 0; i < count; i++) this.recentUserMessageTimes.push(now);
     this.recentUserMessageTimes = this.recentUserMessageTimes.filter((t) => now - t < floodWindow);
-
-    // ⑦ 节流冷却期：刚被跳过时保持沉默，避免“刚闭嘴又立刻开口”
-    const cooldown = this.cfg.throttle.cooldownAfterSkipSeconds * 1000;
-    if (this.lastSkipAt > 0 && now - this.lastSkipAt < cooldown) {
-      this.logger.debug({ sinceMs: now - this.lastSkipAt }, '处于节流冷却期，保持沉默');
-      onReady({ action: 'drop', reason: 'cooldown' });
-      return;
-    }
-
-    // ⑧ 连发节流：刷屏（硬上限）
-    if (this.recentUserMessageTimes.length >= this.cfg.throttle.floodThreshold) {
-      if (Math.random() < this.cfg.throttle.floodSkipProbability) {
-        this.logger.warn({ count, total: this.recentUserMessageTimes.length, windowS: this.cfg.throttle.floodWindowSeconds }, '检测到刷屏，本次不回复');
-        this.lastSkipAt = now;
-        onReady({ action: 'drop', reason: 'flood-throttle' });
-        return;
-      }
-    }
-
-    // ⑨ 连发节流：窗口内回复次数到顶（硬上限）
-    const burstWindow = this.cfg.throttle.burstWindowSeconds * 1000;
-    const recentReplies = this.recentReplyTimes.filter((t) => now - t < burstWindow);
-    if (recentReplies.length >= this.cfg.throttle.burstMaxReplies) {
-      if (Math.random() < this.cfg.throttle.burstSkipProbability) {
-        this.logger.warn(
-          { repliesInWindow: recentReplies.length, windowS: this.cfg.throttle.burstWindowSeconds },
-          '窗口内回复次数已达上限，本次不回',
-        );
-        this.lastSkipAt = now;
-        onReady({ action: 'drop', reason: 'burst-throttle' });
-        return;
-      }
-    }
-    this.recentReplyTimes = recentReplies;
 
     onReady({ action: 'reply', userId, text: merged, mergedCount: count, messageId });
   }

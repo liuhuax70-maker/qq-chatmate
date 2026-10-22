@@ -85,10 +85,11 @@ async function main(): Promise<void> {
     check('睡前是 asleep', sm.phase() === 'asleep', sm.phase());
 
     const r = sm.onUserMessage('喂 醒醒');
-    check('被吵醒这一条不回', r.respond === false, JSON.stringify(r));
+    // 2026-10-22 改：用户要求"发了消息就必须有回复"，所以被吵醒也回，只是慢一点
+    check('被吵醒也要回（不能沉默）', r.respond === true, JSON.stringify(r));
     check('原因是 waking-up', r.reason === 'waking-up', r.reason);
+    check('带延迟（起床气）', r.delayMs > 0, String(r.delayMs));
     check('phase 变成 waking', sm.phase() === 'waking', sm.phase());
-    check('waking 时不可回复', !sm.canReply());
     check('记录被吵醒次数', sm.getWakeCount() === 1, String(sm.getWakeCount()));
     check('消息被记下', sm.drainNightMessages().length === 1);
     store.close();

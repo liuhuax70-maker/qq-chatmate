@@ -160,8 +160,11 @@ export class SleepStateMachine {
     this.refresh();
     const p = this.phase();
 
+    // ⚠️ 用户明确要求：他发了消息就必须有回复，不允许沉默。
+    // 所以睡觉/刚被吵醒都不再"不回"，只体现为**回复更慢 + 带起床气**。
+    // 睡眠状态仍然记录（prompt 里会写"你被吵醒了"），人格表现靠语气，不靠不回。
+
     if (p === 'asleep') {
-      // 被吵醒：进入 waking 阶段，需要缓一会儿
       const now = Date.now();
       const [minD, maxD] = this.cfg.wakeUpDelayMinutes;
       const delayMin = minD + Math.random() * (maxD - minD);
@@ -176,18 +179,19 @@ export class SleepStateMachine {
 
       this.logger.info(
         { delayMinutes: delayMin.toFixed(1), wakeCount: this.state.wakeCount },
-        '半夜被吵醒，需要时间缓过来',
+        '半夜被吵醒，会回但慢一点、带起床气',
       );
 
-      // 这一条不回（还在迷糊），等 wakeUpReadyAt 之后的消息才会正常处理
-      return { respond: false, delayMs: 0, reason: 'waking-up' };
+      // 仍然回，只是慢一点（被从睡梦里叫醒，打字慢是自然的）
+      return { respond: true, delayMs: delayMin * 60_000, reason: 'waking-up' };
     }
 
     if (p === 'waking') {
-      // 正在缓，还是不理
+      // 正在缓：也回，稍微慢一点
       this.state.nightMessages.push({ text, at: Date.now() });
       this.saveState();
-      return { respond: false, delayMs: 0, reason: 'still-waking' };
+      const remaining = Math.max(0, this.state.wakeUpReadyAt - Date.now());
+      return { respond: true, delayMs: Math.min(remaining, 60_000), reason: 'still-waking' };
     }
 
     return { respond: true, delayMs: 0, reason: p };
