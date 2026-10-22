@@ -320,7 +320,7 @@ const PANEL_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>鲸奈 · 控制面板</title>
+<title>大肥鱼 · 控制面板</title>
 <style>
   :root { --bg:#0f172a; --card:#1e293b; --ok:#34d399; --bad:#f87171; --muted:#94a3b8; --accent:#60a5fa; }
   * { box-sizing: border-box; }
@@ -355,7 +355,7 @@ const PANEL_HTML = `<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>鲸奈 · 控制面板</h1>
+<h1>大肥鱼 · 控制面板</h1>
 <div class="sub">监控 + 启停四个组件 · 每 3 秒自动刷新</div>
 <div class="grid" id="grid"></div>
 
