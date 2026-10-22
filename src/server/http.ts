@@ -236,6 +236,19 @@ export function startHttpServer(opts: HttpOptions, ctx: HttpContext, logger: Log
 async function findQrDataUrl(): Promise<string | null> {
   const fsMod = await import('node:fs');
   const pathMod = await import('node:path');
+
+  // NapCat 的二维码位置（优先）
+  const napcatQr = pathMod.resolve(process.cwd(), '..', 'napcat', 'napcat', 'cache', 'qrcode.png');
+  try {
+    if (fsMod.existsSync(napcatQr)) {
+      const age = Date.now() - fsMod.statSync(napcatQr).mtimeMs;
+      if (age < 5 * 60 * 1000) {
+        const buf = fsMod.readFileSync(napcatQr);
+        return `data:image/png;base64,${buf.toString('base64')}`;
+      }
+    }
+  } catch { /* 继续试 Lagrange */ }
+
   // 从 control 配置里拿 lagrange 的 workdir，退回默认路径
   const candidates = [
     pathMod.resolve(process.cwd(), '..', 'lagrange', 'Lagrange.OneBot', 'bin', 'Release', 'net9.0', 'win-x64', 'publish'),

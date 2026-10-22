@@ -347,29 +347,35 @@ namespace QQChatmateLauncher
         {
             try
             {
+                // NapCat 把二维码写在这里
+                string napcatQr = Path.Combine(BaseDir, @"napcat\napcat\cache\qrcode.png");
+                if (File.Exists(napcatQr))
+                {
+                    var t = File.GetLastWriteTime(napcatQr);
+                    // 二维码有效期约 5 分钟
+                    if ((DateTime.Now - t).TotalMinutes < 5) return napcatQr;
+                }
+
+                // 兼容：Lagrange 时代的位置（如果还用 Lagrange）
                 string publish = LagrangePublish;
                 if (string.IsNullOrEmpty(publish))
                     publish = Path.Combine(BaseDir, @"lagrange\Lagrange.OneBot\bin\Release\net9.0\win-x64\publish");
-                if (!Directory.Exists(publish)) return null;
-
-                var files = Directory.GetFiles(publish, "qr-*.png");
-                if (files.Length == 0) return null;
-
-                // 取最新的一个，并且要求是近期生成的（旧码已失效）
-                string newest = null;
-                DateTime newestTime = DateTime.MinValue;
-                foreach (string f in files)
+                if (Directory.Exists(publish))
                 {
-                    var t = File.GetLastWriteTime(f);
-                    if (t > newestTime) { newestTime = t; newest = f; }
+                    var files = Directory.GetFiles(publish, "qr-*.png");
+                    string newest = null;
+                    DateTime newestTime = DateTime.MinValue;
+                    foreach (string f in files)
+                    {
+                        var ft = File.GetLastWriteTime(f);
+                        if (ft > newestTime) { newestTime = ft; newest = f; }
+                    }
+                    if (newest != null && (DateTime.Now - newestTime).TotalMinutes < 5) return newest;
                 }
-                // 超过 5 分钟的二维码视为过期
-                if ((DateTime.Now - newestTime).TotalMinutes > 5) return null;
-                return newest;
+                return null;
             }
             catch { return null; }
         }
-
         /// <summary>
         /// 关掉启动器拉起的全部子进程（含进程树）。
         /// 这样"关掉 exe = 关掉所有相关进程"。
