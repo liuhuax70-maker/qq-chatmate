@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -580,6 +580,37 @@ namespace QQChatmateLauncher
             }
             catch { }
         }
+        /// <summary>
+        /// 关掉所有残留的 QQ 进程。
+        ///
+        /// 为什么必须做：NapCat 通过注入 QQ 进程工作。
+        /// 如果用户手动开着 QQ，或者上次退出没清干净，
+        /// NapCat 要么注入失败，要么注入到错误实例，表现为"点了没反应"。
+        /// </summary>
+        public static void KillLeftoverQQ()
+        {
+            foreach (string img in new[] { "QQ.exe", "QQEX.exe" })
+            {
+                try
+                {
+                    var psi = new ProcessStartInfo("taskkill", "/IM " + img + " /T /F")
+                    {
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    };
+                    using (var p = Process.Start(psi))
+                    {
+                        p.StandardOutput.ReadToEnd();
+                        p.WaitForExit(8000);
+                    }
+                }
+                catch { }
+            }
+            // 给系统一点时间释放进程句柄和端口
+            Thread.Sleep(1500);
+        }
         public static string StartLagrange()
         {
             // NapCat 版：启动 NapCat（hook QQ）
@@ -589,6 +620,11 @@ namespace QQChatmateLauncher
 
             string launcher = Path.Combine(napDir, @"napcat\launcher-napcat-qq.bat");
             if (!File.Exists(launcher)) return "找不到 launcher-napcat-qq.bat：" + launcher;
+
+            // ⚠️ NapCat 是往 QQ 进程里注入的，如果已经有 QQ 在跑，
+            // 注入必然失败（或者注入到别的实例上，行为诡异）。
+            // 所以启动前先把残留的 QQ 关掉——这是首次启动失败最常见的原因。
+            KillLeftoverQQ();
 
             // NapCat 会拉起 QQ 并注入，需要真实 GUI（QQ 登录窗口）。
             // 这里用 start 开一个最小化窗口跑 launcher。
@@ -715,6 +751,20 @@ namespace QQChatmateLauncher
         private Label _statusBar;
         private Dictionary<string, Label[]> _statusLabels = new Dictionary<string, Label[]>();
         private System.Windows.Forms.Timer _timer;
+
+        // ── 自动拉起（看门狗）──────────────────────────────────
+        // 长期在线的服务，组件挂了没人管是很现实的问题：
+        // 线上真的发生过——机器人进程停了 2 天，直到用户发现没回复才察觉。
+        // 这里每 30 秒检查一次，连续 2 次（=1 分钟）确认挂了才拉起，
+        // 避免端口短暂抖动导致误重启。
+        private bool _autoRestart = true;      // 默认开启，可在界面关掉
+        private bool _autoStartOnOpen = true;  // 打开 exe 就自动拉起全部组件
+        private int _botDownStreak = 0;
+        private int _ttsDownStreak = 0;
+        private int _lagDownStreak = 0;
+        private int _signDownStreak = 0;
+        private bool _restarting = false;      // 防止上一轮拉起还没完成就再拉
+        private int _tickCount = 0;
         private PictureBox _qrBox;
         private Label _qrHint;
         private string _lastQrPath;
@@ -816,6 +866,23 @@ namespace QQChatmateLauncher
             };
             Controls.Add(btnPanel);
 
+            // 自动拉起开关：默认勾选。不想让它自动重启时可以取消。
+            var chkAuto = new CheckBox
+            {
+                Text = "组件掉线自动拉起",
+                Location = new Point(284, y + 62),
+                Size = new Size(240, 22),
+                Checked = true,
+                ForeColor = MutedColor,
+                BackColor = BgColor
+            };
+            chkAuto.CheckedChanged += (s, e) =>
+            {
+                _autoRestart = chkAuto.Checked;
+                SetStatus(_autoRestart ? "已开启自动拉起（掉线 1 分钟后自动重启）" : "已关闭自动拉起");
+            };
+            Controls.Add(chkAuto);
+
             var btnLogs = new Button
             {
                 Text = "打开日志目录",
@@ -883,19 +950,44 @@ namespace QQChatmateLauncher
             qrPanel.Controls.Add(_qrHint);
 
             _timer = new System.Windows.Forms.Timer { Interval = 3000 };
-            _timer.Tick += (s, e) => { UpdateStatus(); UpdateQr(); };
+            _timer.Tick += (s, e) =>
+            {
+                UpdateStatus();
+                UpdateQr();
+                // 每 10 个 tick（30 秒）做一次看门狗检查
+                _tickCount++;
+                if (_tickCount % 10 == 0) WatchdogTick();
+            };
             _timer.Start();
 
             Shown += (s, e) =>
             {
                 UpdateStatus();
                 UpdateQr();
+
                 if (_startMinimized)
                 {
                     // 开机自启：收进任务栏，不打扰用户
                     WindowState = FormWindowState.Minimized;
                     ShowInTaskbar = true;
-                    SetStatus("已自动启动 · 双击任务栏图标可查看");
+                }
+
+                // ── 自动启动 ────────────────────────────────────
+                // 目标：双击 exe 就直接能用，不用再点「一键全部启动」。
+                // 组件已经在跑的（比如上次没关干净）不重复拉起。
+                if (_autoStartOnOpen)
+                {
+                    bool anythingDown = !Program.TestPort(8080) || !Program.TestPort(3000)
+                        || !Program.TestPort(9880) || !Program.TestSignContainer();
+                    if (anythingDown)
+                    {
+                        SetStatus("正在自动启动全部组件…");
+                        StartAllAsync();
+                    }
+                    else
+                    {
+                        SetStatus("组件已全部在线，可以直接聊天了");
+                    }
                 }
                 else
                 {
@@ -996,27 +1088,76 @@ namespace QQChatmateLauncher
             UpdateStatus();
         }
 
+        /// <summary>
+        /// 按依赖顺序启动全部组件。
+        ///
+        /// 关键改进：不是固定 sleep 几秒，而是「等到真的就绪」再往下走。
+        /// 固定等待在不同机器上差别很大——Docker 冷启动可能要 2 分钟，
+        /// 而原来只等 2 秒就开始启 NapCat，必然失败。
+        /// </summary>
         private void StartAllAsync()
         {
             SetStatus("正在启动全部组件…");
             var t = new Thread(() =>
             {
-                string[] msgs = new string[4];
-                msgs[0] = Program.StartSign();
-                Thread.Sleep(2000);
-                msgs[1] = Program.StartLagrange();
-                Thread.Sleep(2000);
-                msgs[2] = Program.StartBot();
-                Thread.Sleep(2000);
-                msgs[3] = Program.StartTts();
+                // 1) 签名服务（Docker，最慢，最多等 120 秒）
+                SetStatusSafe("启动签名服务…");
+                Program.StartSign();
+                WaitFor(() => Program.TestSignContainer(), 120000);
+
+                // 2) NapCat 协议端
+                //    它会拉起 QQ，需要真实 GUI。启动后要等 QQ 进程出现。
+                SetStatusSafe("启动 NapCat 协议端…");
+                Program.StartLagrange();
+                WaitFor(() => Program.TestLagrange(), 60000);
+
+                // 3) 机器人主程序
+                SetStatusSafe("启动机器人…");
+                Program.StartBot();
+                WaitFor(() => Program.TestPort(8080) && Program.TestPort(3000), 60000);
+
+                // 4) TTS（模型加载慢，最多等 120 秒）
+                SetStatusSafe("启动 TTS 语音…");
+                Program.StartTts();
+                WaitFor(() => Program.TestPort(9880), 120000);
+
+                // 全部就绪后检查最终状态
+                bool allUp = Program.TestPort(8080) && Program.TestPort(3000)
+                    && Program.TestPort(9880) && Program.TestSignContainer();
                 BeginInvoke((Action)(() =>
                 {
-                    SetStatus("已触发全部启动（签名/协议端/机器人/TTS）");
                     UpdateStatus();
+                    if (allUp)
+                    {
+                        SetStatus("全部组件已就绪 · 可以聊天了");
+                    }
+                    else
+                    {
+                        SetStatus("部分组件未就绪，请查看下方状态（可能是首次扫码或 Docker 还在启动）");
+                    }
                 }));
             });
             t.IsBackground = true;
             t.Start();
+        }
+
+        /// <summary>等到条件成立或超时。每 500ms 检查一次。</summary>
+        private static bool WaitFor(Func<bool> cond, int timeoutMs)
+        {
+            int waited = 0;
+            while (waited < timeoutMs)
+            {
+                try { if (cond()) return true; } catch { }
+                Thread.Sleep(500);
+                waited += 500;
+            }
+            return false;
+        }
+
+        /// <summary>从后台线程安全地更新状态栏。</summary>
+        private void SetStatusSafe(string msg)
+        {
+            try { BeginInvoke((Action)(() => SetStatus(msg))); } catch { }
         }
 
         private void StopAllAsync()
@@ -1044,6 +1185,78 @@ namespace QQChatmateLauncher
             _statusBar.Text = DateTime.Now.ToString("HH:mm:ss") + "  " + msg;
         }
 
+        /// <summary>
+        /// 看门狗：每 30 秒检查一次四个组件，连续 2 次挂了才拉起。
+        ///
+        /// 为什么是"连续 2 次"：端口探测偶有抖动（比如组件正在重启），
+        /// 立刻拉起会造成重复启动。等 1 分钟确认真的挂了再动手。
+        /// </summary>
+        private void WatchdogTick()
+        {
+            if (!_autoRestart || _restarting) return;
+
+            bool bot = Program.TestPort(8080) && Program.TestPort(3000);
+            bool tts = Program.TestPort(9880);
+            bool sign = Program.TestSignContainer();
+            bool lag = Program.TestLagrange();
+
+            _botDownStreak = bot ? 0 : _botDownStreak + 1;
+            _ttsDownStreak = tts ? 0 : _ttsDownStreak + 1;
+            _signDownStreak = sign ? 0 : _signDownStreak + 1;
+            _lagDownStreak = lag ? 0 : _lagDownStreak + 1;
+
+            // 连续 2 次（60 秒）确认挂了才动手
+            const int THRESHOLD = 2;
+            var toRestart = new System.Collections.Generic.List<string>();
+            if (_signDownStreak >= THRESHOLD) toRestart.Add("sign");
+            if (_lagDownStreak >= THRESHOLD) toRestart.Add("lagrange");
+            if (_botDownStreak >= THRESHOLD) toRestart.Add("bot");
+            if (_ttsDownStreak >= THRESHOLD) toRestart.Add("tts");
+
+            if (toRestart.Count == 0) return;
+
+            _restarting = true;
+            SetStatus("检测到组件掉线，正在自动拉起：" + string.Join("/", toRestart));
+            var t = new Thread(() =>
+            {
+                try
+                {
+                    // 按依赖顺序：签名 → 协议端 → 机器人 → TTS
+                    foreach (string name in toRestart)
+                    {
+                        try
+                        {
+                            if (name == "sign") Program.StartSign();
+                            else if (name == "lagrange") Program.StartLagrange();
+                            else if (name == "bot") Program.StartBot();
+                            else if (name == "tts") Program.StartTts();
+                        }
+                        catch { /* 单个组件失败不影响其它 */ }
+                        Thread.Sleep(1500);
+                    }
+                }
+                finally
+                {
+                    // 重置计数，给新拉起的组件一点启动时间再开始检查
+                    _botDownStreak = 0;
+                    _ttsDownStreak = 0;
+                    _lagDownStreak = 0;
+                    _signDownStreak = 0;
+                    _restarting = false;
+                    try
+                    {
+                        BeginInvoke((Action)(() =>
+                        {
+                            SetStatus("自动拉起完成：" + string.Join("/", toRestart));
+                            UpdateStatus();
+                        }));
+                    }
+                    catch { }
+                }
+            });
+            t.IsBackground = true;
+            t.Start();
+        }
         private void UpdateStatus()
         {
             bool bot = Program.TestPort(8080) && Program.TestPort(3000);
