@@ -7,6 +7,9 @@ import { createSession, type Session } from './session';
 import { PromptBuilder } from './brain/prompt';
 import { LLMClient } from './brain/llm';
 import { MemorySystem } from './memory';
+import { parseSkillCalls } from './responder/skills';
+import type { SkillCall } from './responder/skills';
+import { QqSkills } from './adapter/qq-skills';
 import { PostProcessor, sleep } from './responder';
 import { StickerLibrary } from './responder/stickers';
 import { inferScene } from './responder/stickers';
@@ -175,6 +178,7 @@ async function main(): Promise<void> {
   const stickers = new StickerLibrary(store, logger);
   const learner = new StickerLearner(store, logger);
   const post = new PostProcessor(cfg.responder, session.getPersona(), logger, stickers);
+
   const tts = new TtsClient(cfg.responder.voice as VoiceConfig, logger);
 
   // ── 管线 ────────────────────────────────────────────────
@@ -202,6 +206,9 @@ async function main(): Promise<void> {
     },
     logger,
   );
+  // QQ 技能执行器。destructive 技能（删好友/退群）不开放给模型，
+  // 那种操作必须由代码层基于明确规则判断。
+  const skills = new QqSkills(adapter, logger, cfg.adapter.selfId);
 
   // 睡眠状态机的引用：promptBuilder 早于 proactive 创建，用 ref 打破循环依赖
   const sleepMachineRef: { current?: { describe(): string } } = {};
@@ -222,6 +229,62 @@ async function main(): Promise<void> {
   sleepMachineRef.current = proactive.sleep;
   wakeCountRef.current = () => proactive.sleep.getWakeCount();
 
+  // ── 技能动作执行 ────────────────────────────────────────
+  // 把 LLM 写的标记翻译成真实 QQ 操作。
+  //
+  // 设计约束：
+  //   · 每个动作独立 try——戳失败了不能影响发图
+  //   · 动作之间有小间隔，像真人在连着点
+  //   · 不执行 destructive 技能（模型没权限删好友/退群）
+  const runSkillActions = async (actions: SkillCall[]): Promise<void> => {
+    for (const action of actions) {
+      try {
+        switch (action.kind) {
+          case 'poke': {
+            const r = await skills.poke(peerId);
+            logger.info({ ok: r.ok, err: r.error }, '技能：戳一戳');
+            break;
+          }
+          case 'like': {
+            const r = await skills.sendLike(peerId, 1);
+            logger.info({ ok: r.ok, err: r.error }, '技能：点赞');
+            break;
+          }
+          case 'image': {
+            const r = await skills.sendImage(peerId, action.file);
+            logger.info({ ok: r.ok, err: r.error }, '技能：发图片');
+            break;
+          }
+          case 'sticker': {
+            // 复用现有的收藏表情库
+            const picked = post.pickStickerFor('', 1);
+            if (picked?.url && !/rkey=|multimedia\.nt\.qq\.com\.cn\/download/.test(picked.url)) {
+              const r = await skills.sendSticker(peerId, picked.url);
+              logger.info({ ok: r.ok, err: r.error }, '技能：发表情包');
+            } else {
+              logger.debug('没有可用的表情包，跳过');
+            }
+            break;
+          }
+          case 'recall': {
+            const r = await skills.recallMsg(peerId);
+            logger.info({ ok: r.ok, err: r.error }, '技能：撤回消息');
+            break;
+          }
+          case 'forward': {
+            const r = await skills.forwardMsg(peerId, action.messages);
+            logger.info({ ok: r.ok, err: r.error }, '技能：合并转发');
+            break;
+          }
+        }
+      } catch (err) {
+        // 单个动作失败不影响其它
+        logger.warn({ kind: action.kind, err: (err as Error).message }, '技能执行异常（已忽略）');
+      }
+      // 动作之间留点间隔，像真人在操作
+      await sleep(300);
+    }
+  };
   // ── 核心：收到消息 → 决策 → 回复 ────────────────────────
   const handleReply = async (
     userId: string,
@@ -286,8 +349,21 @@ async function main(): Promise<void> {
       );
       await sleep(delay);
 
+      // ── 技能标记解析 ──────────────────────────────────────
+      // LLM 会在回复里写 [戳] [表情包] [图:xxx] 这类标记。
+      // 必须先从文本里剥离再发送，否则会把 "[戳]" 当成话发出去。
+      const parsedReply = parseSkillCalls(processed.text);
+      if (parsedReply.actions.length > 0) {
+        logger.info(
+          { actions: parsedReply.actions.map((a) => a.kind) },
+          '回复中检测到技能动作',
+        );
+      }
+      // 技能标记剥完后可能只剩空白 → 用原文兜底（至少发点什么）
+      const replyText = parsedReply.text || processed.text.replace(/\[[^\]]+\]/g, '').trim() || '嗯';
+
       // 分段发送（每段内部再解析出文字/表情消息段）
-      const segments = post.split(processed.text);
+      const segments = post.split(replyText);
 
       // 语音：只在「单条 + 短句 + 概率命中 + 不带小黄脸表情」时，用语音替代打字。
       // 带表情标记的句子不能转语音（voice 里放不下 face），直接照常打字。
@@ -411,7 +487,15 @@ async function main(): Promise<void> {
         }
       }
 
-      session.recordAssistant(processed.text, { tokens: result.completionTokens, latencyMs: result.latencyMs });
+      // ── 执行技能动作 ──────────────────────────────────────
+      // 顺序：先让文字到达，再做小动作。
+      // 比如"想你了 [戳]"——先看到字，再被戳，节奏才对。
+      // 全部包在 try 里：技能失败绝不能影响这条回复已经发出的事实。
+      if (parsedReply.actions.length > 0) {
+        await runSkillActions(parsedReply.actions);
+      }
+
+      session.recordAssistant(replyText, { tokens: result.completionTokens, latencyMs: result.latencyMs });
       pipeline.markReplied();
       session.persist(true);
 

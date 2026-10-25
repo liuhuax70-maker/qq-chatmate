@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { PersonaData } from '../persona';
+import { SKILL_PROMPT } from '../responder/skills';
 import type { Session } from '../session';
 import type { MemoryRecord } from '../store/db';
 
@@ -108,6 +109,9 @@ export class PromptBuilder {
     systemParts.push(this.fillTemplate(this.systemTemplate, persona));
     systemParts.push('---');
     systemParts.push(this.fillTemplate(this.rulesTemplate, persona));
+    // QQ 技能说明：放在静态区（缓存友好），且必须在"处境"之前
+    systemParts.push('---');
+    systemParts.push(SKILL_PROMPT);
     systemParts.push(
       [
         '---',
