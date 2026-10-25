@@ -177,6 +177,13 @@ async function main(): Promise<void> {
   // ── 后处理 ──────────────────────────────────────────────
   const stickers = new StickerLibrary(store, logger);
   const learner = new StickerLearner(store, logger);
+
+  // 最近发过的表情包（跨轮次），用于避免短时间内重复同一张。
+  // 这是"人机感"的主要来源之一：库里只有几张时，不复用就会露馅。
+  let recentStickers: Array<{ url: string; at: number }> = [];
+
+  // 学会的表情数量（实时读取，学新表情后会变）
+  const getLearnedCount = (): number => (learner.count ? learner.count() : 0);
   const post = new PostProcessor(cfg.responder, session.getPersona(), logger, stickers);
 
   const tts = new TtsClient(cfg.responder.voice as VoiceConfig, logger);
@@ -449,20 +456,43 @@ async function main(): Promise<void> {
       }
 
       // 短回复有概率附一张表情包（独立一条消息，像真人补图）
+      //
+      // ⚠️ 这里最容易"人机感"。真实情况是：库里只有 2 张，
+      // 而 learner 又有 50% 概率选中它们，结果同一张反复出现。
+      // 三重防护：池子太小就少发、刚发过的硬性跳过、跨轮次记最近发过的。
       const stickerCfg = cfg.responder.sticker;
       let stickerUrl: string | null = null;
 
       if (stickerCfg?.enabled !== false) {
-        // 优先用「学会意思」的表情（按场景精准匹配）
-        const scene = inferScene(processed.text.replace(/\[(?:表情|face)\s*[:：][^\]]+\]/g, ''));
+        const scene = inferScene(replyText.replace(/\[(?:表情|face)\s*[:：][^\]]+\]/g, ''));
+
+        // 池子健康度：太小就少发，别硬凑
+        const learnedPool = getLearnedCount();
+        const healthy = learnedPool >= 5;
+        const baseProb = stickerCfg?.probability ?? 0.25;
+        const probScale = healthy ? 1 : 0.35;
+        const effectiveProb = baseProb * probScale;
+
+        // 最近发过的 URL（30 分钟内不重复）
+        const nowTs = Date.now();
+        const RECENT_MS = 30 * 60_000;
+        recentStickers = recentStickers.filter((r) => nowTs - r.at < RECENT_MS);
+        const recentUrls = new Set(recentStickers.map((r) => r.url));
+
         const learned = learner.pickByScene(scene);
-        if (learned && Math.random() < 0.5) {
+        if (learned && !recentUrls.has(learned.url) && Math.random() < 0.5 * probScale) {
           stickerUrl = learned.url;
-          logger.info({ scene, meaning: learned.meaning }, '使用学会的表情包');
+          logger.info({ scene, meaning: learned.meaning, pool: learnedPool }, '使用学会的表情包');
         } else {
-          // 回退到收藏库随机
-          const picked = post.pickStickerFor(processed.text, stickerCfg?.probability ?? 0.25);
-          stickerUrl = picked?.url ?? null;
+          const picked = post.pickStickerFor(replyText, effectiveProb);
+          stickerUrl = picked?.url && !recentUrls.has(picked.url) ? picked.url : null;
+        }
+
+        if (stickerUrl) {
+          recentStickers.push({ url: stickerUrl, at: nowTs });
+          if (recentStickers.length > 10) recentStickers.shift();
+        } else if (!healthy) {
+          logger.debug({ pool: learnedPool }, '表情池太小，本轮不发表情包');
         }
       }
 

@@ -1,5 +1,6 @@
 /** 表情学习器测试：npm run test:learn */
 import { StickerLearner, buildAskQuestion } from '../src/responder/sticker-learner';
+import { StickerLibrary } from '../src/responder/stickers';
 import { Store } from '../src/store/db';
 import { initLogger } from '../src/infra/logger';
 import fs from 'node:fs';
@@ -137,6 +138,30 @@ console.log('\n[9] 已经认识的不再问');
   l.tryLearnFromReply('白眼');
   check('已认识的图返回 known', l.onReceivedImage('http://x/k.png', true) === 'known');
 }
+
+
+  console.log('\n[N] 表情包去重：池子小时不该反复发同一张');
+  {
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'sticker-lib-'));
+    const store2 = new Store(path.join(dir2, 'test.db'));
+    const lib = new StickerLibrary(store2, logger);
+    (lib as any).stickers = [
+      { url: 'http://x/a.png', tags: [], usedCount: 0, lastUsedAt: 0 },
+      { url: 'http://x/b.png', tags: [], usedCount: 0, lastUsedAt: 0 },
+      { url: 'http://x/c.png', tags: [], usedCount: 0, lastUsedAt: 0 },
+    ];
+
+    const picked = new Set<string>();
+    for (let i = 0; i < 3; i++) {
+      const s = lib.pick('generic');
+      if (s) picked.add(s.url);
+    }
+    check('3 张库连挑 3 次不重复', picked.size === 3, 'actual ' + picked.size);
+    check('3 张时 isPoolHealthy=false', lib.isPoolHealthy() === false);
+    check('size() 返回 3', lib.size() === 3, String(lib.size()));
+
+    store2.close();
+  }
 
 console.log(`\n=== 结果：${pass} 通过，${fail} 失败 ===`);
 process.exit(fail > 0 ? 1 : 0);

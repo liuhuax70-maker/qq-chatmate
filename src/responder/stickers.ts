@@ -168,35 +168,72 @@ export class StickerLibrary {
    *
    * 场景 → 候选标签。标签对不上也没关系，会退化成随机。
    */
+  /**
+   * 挑一张表情包。
+   *
+   * ⚠️ 这里的关键教训是：**池子小的时候，再聪明的算法也只能反复发同一张。**
+   * 之前库里只有 2 张、每张用了 14 次，结果就是"人机感"。
+   *
+   * 所以除了排序，还加了两个硬约束：
+   *   1) 最近发过的（默认 30 分钟内）直接排除，除非池子真的只剩它
+   *   2) 池子太小（< 5 张）时，调用方应该降低发送概率——这里通过
+   *      `shouldSendSticker()` 暴露这个信号
+   */
   pick(scene: StickerScene): Sticker | null {
     if (this.stickers.length === 0) return null;
 
     const candidates = SCENE_TAGS[scene] ?? [];
     const now = Date.now();
 
-    // 1) 有标签的优先
+    // 1) 场景匹配优先
     let pool = this.stickers.filter(
       (s) => s.tags.some((t) => candidates.includes(t)) && s.tags[0] !== 'untagged',
     );
 
-    // 2) 没标签 → 全部随机
+    // 2) 没标签 → 全部
     if (pool.length === 0) pool = this.stickers.slice();
 
-    // 3) 优先挑没用过的 / 很久没用的
-    pool.sort((a, b) => {
-      const aRecent = now - a.lastUsedAt < 3_600_000 ? 1 : 0;
-      const bRecent = now - b.lastUsedAt < 3_600_000 ? 1 : 0;
-      if (aRecent !== bRecent) return aRecent - bRecent;
-      return a.usedCount - b.usedCount || Math.random() - 0.5;
-    });
+    // 3) 硬性排除最近发过的（这是防"人机感"的关键）
+    //    30 分钟冷却：短时间内重复同一张，任何人看了都觉得是机器人。
+    const COOLDOWN_MS = 30 * 60_000;
+    const fresh = pool.filter((s) => now - (s.lastUsedAt || 0) >= COOLDOWN_MS);
 
-    // 4) 从前 3 个里随机，避免每次都同一张
-    const top = pool.slice(0, Math.min(3, pool.length));
+    // 池子够大就坚持排除；实在没得选才回退（但不能回退到刚刚才发的那张）
+    let usable = fresh;
+    if (usable.length === 0) {
+      // 全部都在冷却期里 → 退而求其次：挑最久没发的那几张
+      const sorted = pool.slice().sort((a, b) => (a.lastUsedAt || 0) - (b.lastUsedAt || 0));
+      usable = sorted.slice(0, Math.max(1, Math.ceil(sorted.length / 2)));
+    }
+
+    // 4) 在可用池里，优先用得少的
+    usable.sort((a, b) => (a.usedCount || 0) - (b.usedCount || 0) || Math.random() - 0.5);
+
+    // 5) 从最少的 3 个里随机（避免排序导致的固定顺序）
+    const top = usable.slice(0, Math.min(3, usable.length));
     const chosen = top[Math.floor(Math.random() * top.length)];
-    chosen.usedCount++;
+    chosen.usedCount = (chosen.usedCount || 0) + 1;
     chosen.lastUsedAt = now;
     this.save();
     return chosen;
+  }
+
+  /**
+   * 当前库里有多少张可用的表情。
+   * 调用方用它来决定"该不该发"——池子太小就少发，别硬凑。
+   */
+  size(): number {
+    return this.stickers.length;
+  }
+
+  /**
+   * 池子健康度检查。
+   *
+   * 少于 5 张时，建议把发送概率压到很低（0.1 以下），
+   * 因为无论怎么挑都躲不开重复。真正解决要靠 refresh() 拉更多收藏。
+   */
+  isPoolHealthy(): boolean {
+    return this.stickers.length >= 5;
   }
 }
 
