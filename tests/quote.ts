@@ -1,8 +1,13 @@
 /**
- * 引用回复判断测试。
+ * 引用回复挑选测试。
  *
- * 需求：不是所有消息都引用。只有信息量大时才引用——
- * 单条短消息引用反而显得郑重、不自然。
+ * 需求澄清（重要）：
+ *   ❌ 不是"一条 15 字以上的消息就引用"
+ *   ✅ 而是"多条消息时，挑几个重要的分别引用回复"
+ *
+ * 场景：你连发五六条，信息量很大，
+ *       她挑其中最有内容的几条，每条单独引用回一句，
+ *       而不是笼统回一句总的话。
  *
  * 运行：npm run test:quote
  */
@@ -51,68 +56,106 @@ function makePipeline(): { p: MessagePipeline; store: Store } {
   return { p, store };
 }
 
-console.log('\n[1] 单条短消息 → 不引用');
-{
-  const { p, store } = makePipeline();
-  check('"在吗" 不引用', p.shouldQuote('在吗', 1) === false);
-  check('"嗯" 不引用', p.shouldQuote('嗯', 1) === false);
-  check('"哈哈哈" 不引用', p.shouldQuote('哈哈哈', 1) === false);
-  check('"吃了" 不引用', p.shouldQuote('吃了', 1) === false);
-  check('"今天好累" 不引用（8字，未达阈值）', p.shouldQuote('今天好累', 1) === false);
-  store.close();
+/** 造一条缓冲消息 */
+function m(text: string, id: number, at = Date.now()): any {
+  return { text, messageId: id, at };
 }
 
-console.log('\n[2] 单条长消息 → 引用');
+console.log('\n[1] 单条消息 → 永不引用');
 {
   const { p, store } = makePipeline();
+  check('单条短消息不引用', p.pickQuotable([m('在吗', 1)]).length === 0);
   check(
-    '15 字以上引用',
-    p.shouldQuote('我今天下午去了一趟超市买了好多东西回来', 1) === true,
-  );
-  check(
-    '刚好 15 字边界',
-    p.shouldQuote('一二三四五六七八九十一二三四五', 1) === true,
-  );
-  check(
-    '14 字不引用',
-    p.shouldQuote('一二三四五六七八九十一二三四', 1) === false,
+    '单条长消息也不引用（关键：需求澄清点）',
+    p.pickQuotable([m('我今天下午去了一趟超市买了好多东西回来真的很累', 1)]).length === 0,
   );
   store.close();
 }
 
-console.log('\n[3] 连发多条 → 引用');
+console.log('\n[2] 两条消息 → 只挑 1 条');
 {
   const { p, store } = makePipeline();
-  check('2 条合并 → 引用', p.shouldQuote('在吗\n有事', 2) === true);
-  check('3 条合并 → 引用', p.shouldQuote('a\nb\nc', 3) === true);
-  check('即使字数少，多条也引用', p.shouldQuote('嗯\n对', 2) === true);
+  const picked = p.pickQuotable([m('在吗', 1), m('我有个事想跟你说', 2)]);
+  check('两条挑 1 条', picked.length === 1, `实际 ${picked.length}`);
+  check('挑的是有内容的那条', picked[0]?.text.includes('有个事') === true, picked[0]?.text);
   store.close();
 }
 
-console.log('\n[4] 带问号的具体提问 → 引用');
+console.log('\n[3] 多条消息 → 挑 2-3 条');
 {
   const { p, store } = makePipeline();
-  check('"你昨天说的那个是什么?" → 引用', p.shouldQuote('你昨天说的那个是什么？', 1) === true);
-  check('"在吗?" → 不引用（太短）', p.shouldQuote('在吗？', 1) === false);
-  check('"咋了?" → 不引用（太短）', p.shouldQuote('咋了?', 1) === false);
+  const msgs = [
+    m('在吗', 1),
+    m('我今天被老板骂了', 2),
+    m('好烦', 3),
+    m('你说我是不是该辞职', 4),
+    m('唉', 5),
+  ];
+  const picked = p.pickQuotable(msgs);
+  check('挑出 2-3 条', picked.length >= 2 && picked.length <= 3, `实际 ${picked.length}`);
+  check(
+    '包含最重要的那条（问辞职）',
+    picked.some((x) => x.text.includes('辞职')),
+    picked.map((x) => x.text).join(' | '),
+  );
   store.close();
 }
 
-console.log('\n[5] 多行（他自己分段打字）→ 引用');
+console.log('\n[4] 带问号的优先');
 {
   const { p, store } = makePipeline();
-  check('多行且字数够 → 引用', p.shouldQuote('今天上班\n好烦啊真的', 1) === true);
-  check('多行但太短 → 不引用', p.shouldQuote('嗯\n对', 1) === false);
+  const picked = p.pickQuotable([
+    m('今天天气还行', 1),
+    m('哦对了你觉得我该去吗', 2),
+    m('反正随便', 3),
+  ]);
+  check('问句被挑中', picked.some((x) => x.text.includes('该去吗')), picked.map((x) => x.text).join(' | '));
   store.close();
 }
 
-console.log('\n[6] 空白不计入字数');
+console.log('\n[5] 极短消息不单独引用');
 {
   const { p, store } = makePipeline();
-  const withSpaces = '一 二 三 四 五 六 七 八 九 十 一 二 三 四 五';
-  check('空格不计入 → 15 字算引用', p.shouldQuote(withSpaces, 1) === true);
-  const padded = '  嗯  ';
-  check('纯空白不影响判断', p.shouldQuote(padded, 1) === false);
+  const picked = p.pickQuotable([m('嗯', 1), m('哦', 2), m('好', 3)]);
+  check('全是无意义的短句 → 不引用', picked.length === 0, `实际 ${picked.length}`);
+  store.close();
+}
+
+console.log('\n[6] 数量上限 3 条');
+{
+  const { p, store } = makePipeline();
+  const msgs = Array.from({ length: 10 }, (_, i) =>
+    m(`这是第${i + 1}条有内容的消息`, i + 1, Date.now() + i),
+  );
+  const picked = p.pickQuotable(msgs);
+  check('最多 3 条', picked.length <= 3, `实际 ${picked.length}`);
+  store.close();
+}
+
+console.log('\n[7] 引用顺序跟说话顺序一致');
+{
+  const { p, store } = makePipeline();
+  const base = Date.now();
+  const picked = p.pickQuotable([
+    m('第一句话比较短', 1, base),
+    m('第二句很长很长很长很长的内容', 2, base + 100),
+    m('第三句', 3, base + 200),
+  ]);
+  const ids = picked.map((x) => x.messageId);
+  const sorted = [...ids].sort((a, b) => Number(a) - Number(b));
+  check('按原始顺序返回', JSON.stringify(ids) === JSON.stringify(sorted), JSON.stringify(ids));
+  store.close();
+}
+
+console.log('\n[8] 意思相近的不重复挑');
+{
+  const { p, store } = makePipeline();
+  const picked = p.pickQuotable([
+    m('我今天真的很累啊', 1),
+    m('我今天真的很累啊', 2),
+    m('别的什么', 3),
+  ]);
+  check('重复内容只挑一条', picked.filter((x) => x.text.includes('真的很累')).length <= 1);
   store.close();
 }
 

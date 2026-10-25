@@ -293,14 +293,60 @@ async function main(): Promise<void> {
     }
   };
   // ── 核心：收到消息 → 决策 → 回复 ────────────────────────
+  /**
+   * 针对单条消息生成一句简短回应（用于引用回复）。
+   *
+   * 场景：你连发几条，她挑其中一条引用并回一句。
+   * 这句要短、要贴那条消息本身，不能是空洞的"嗯"。
+   *
+   * 失败返回空字符串，调用方会跳过这条引用。
+   */
+  const buildShortReplyTo = async (msgText: string): Promise<string> => {
+    try {
+      const prompt = [
+        '你在跟恋人聊天。他刚才发了这一条：',
+        `「${msgText}」`,
+        '',
+        '针对这一条，回一句简短的话（10 字以内）。',
+        '要求：',
+        '- 直接回应这一条的具体内容，不要泛泛而谈',
+        '- 口语化，像一个真人的即时反应',
+        '- 不要写引号、不要解释、不要多余的话',
+        '- 只输出这一句',
+      ].join('\n');
+
+      const res = await llm.generate(
+        [
+          {
+            role: 'system',
+            content: `你叫${session.getPersona().identity.name}，${session.getPersona().identity.selfClaim}。用她的口吻说话。`,
+          },
+          { role: 'user', content: prompt },
+        ],
+        { temperature: 0.9, maxTokens: 40 },
+      );
+
+      const out = res.text.trim().replace(/^["「『]|["」』]$/g, '').slice(0, 30);
+      // 过滤掉明显失败的情况
+      if (!out || /^(嗯|哦|好|知道了)$/.test(out)) return out || '';
+      return out;
+    } catch (err) {
+      logger.debug({ err: (err as Error).message }, '生成引用回复失败');
+      return '';
+    }
+  };
   const handleReply = async (
     userId: string,
     text: string,
     replyTo?: number | string,
-    quote = false,
+    /**
+     * 需要单独引用回复的消息。
+     * 多条消息时挑几个重要的分别引用回，单条消息时为空数组。
+     */
+    quotable: Array<{ text: string; messageId?: number | string }> = [],
   ): Promise<void> => {
-    // 不引用时清空 replyTo，否则会无条件带上引用段（引用只在信息量大时才自然）
-    const effectiveReplyTo = quote ? replyTo : undefined;
+    // 正常回复本身不带引用——引用只用于"单独回应某几条重点"
+    const effectiveReplyTo = undefined as number | string | undefined;
     const release = await session.acquireLock();
     try {
       session.recordUser(text);
@@ -371,6 +417,36 @@ async function main(): Promise<void> {
       }
       // 技能标记剥完后可能只剩空白 → 用原文兜底（至少发点什么）
       const replyText = parsedReply.text || processed.text.replace(/\[[^\]]+\]/g, '').trim() || '嗯';
+      // ── 逐条引用回复重点消息 ──────────────────────────────
+      // 需求：多条消息时，挑几个重要的分别引用回，而不是笼统回一句。
+      //
+      // 顺序很重要：先逐条回应，再发主回复。
+      // 真人也是这样——看到你发一串，先挑两句回，再补一句总的。
+      if (quotable.length > 0) {
+        for (const q of quotable) {
+          if (q.messageId === undefined) continue;
+          try {
+            // 针对这条消息的简短回应
+            const shortReply = await buildShortReplyTo(q.text);
+            if (!shortReply) continue;
+            await sleep(post.typingDelayMs(shortReply.length));
+            await adapter.sendPrivateMessageSegments(
+              userId,
+              post.toSegments(shortReply),
+              q.messageId,
+            );
+            logger.info(
+              { quoted: q.text.slice(0, 20), reply: shortReply.slice(0, 20) },
+              '已引用回复一条重点消息',
+            );
+            // 两条引用之间留间隔，像真人一条条回
+            await sleep(post.segmentPauseMs() + 400);
+          } catch (err) {
+            logger.warn({ err: (err as Error).message }, '引用回复失败（已忽略）');
+          }
+        }
+      }
+
 
       // 分段发送（每段内部再解析出文字/表情消息段）
       const segments = post.split(replyText);
@@ -640,7 +716,7 @@ async function main(): Promise<void> {
               if (text) {
                 const verdict = proactive.sleep.onUserMessage(text);
                 if (verdict.respond) {
-                  void handleReply(uid, '[发了张表情]', evMsgId, false);
+                  void handleReply(uid, '[发了张表情]', evMsgId, []);
                 }
               }
               return;
@@ -672,7 +748,7 @@ async function main(): Promise<void> {
                 { chars: text.length, reason: verdict.reason, phase: proactive.sleep.phase() },
                 '睡眠判定为不回（不应发生），强制回复',
               );
-              void handleReply(uid, text, evMsgId, false);
+              void handleReply(uid, text, evMsgId, []);
               return;
             }
             // 被吵醒后慢一点，但最多 10 秒——不能让你干等一两分钟
@@ -685,7 +761,7 @@ async function main(): Promise<void> {
                     uid,
                     text,
                     evMsgId,
-                    text.replace(/\s/g, '').length >= 15 || /[?？]/.test(text),
+                    [],
                   ),
                 wait,
               );
@@ -696,7 +772,7 @@ async function main(): Promise<void> {
 
         pipeline.accept(event, (decision) => {
           if (decision.action === 'reply') {
-            void handleReply(decision.userId, decision.text, decision.messageId, decision.shouldQuote);
+            void handleReply(decision.userId, decision.text, decision.messageId, decision.quotable);
           }
         });
         return;

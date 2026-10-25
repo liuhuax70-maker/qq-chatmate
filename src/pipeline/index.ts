@@ -28,25 +28,31 @@ export type PipelineDecision =
       mergedCount: number;
       messageId?: number | string;
       /**
-       * 是否值得引用回复。
+       * 需要「单独引用回复」的消息列表。
        *
-       * 引用是"针对某条具体消息"的回应，只在信息量大时才自然：
-       *   · 他只发一句"在吗" → 直接回，引用反而显得郑重
-       *   · 他发了一大段或多条 → 引用能表明"我在认真回你说的那件事"
+       * 需求：不是"长消息就引用"，而是多条消息时挑几个重要的分别回。
+       *   · 单条消息 → 空数组（直接回，不引用）
+       *   · 连发多条 → 挑 1-3 条重要的，每条单独引用回复
        *
-       * 判断规则见 shouldQuote()。
+       * 挑选规则见 pickQuotable()。
        */
-      shouldQuote: boolean;
+      quotable: Array<{ text: string; messageId?: number | string }>;
     }
   | { action: 'drop'; reason: string };
 
+/** 合并缓冲里的单条消息 */
+interface BufferedMsg {
+  text: string;
+  messageId?: number | string;
+  at: number;
+}
+
 interface BufferEntry {
   userId: string;
-  texts: string[];
+  /** 逐条保存原文和 id——只有这样才能"挑几条分别引用回复" */
+  msgs: BufferedMsg[];
   timer: NodeJS.Timeout;
   firstAt: number;
-  /** 缓冲区里第一条消息的 id，用于回复时引用 */
-  firstMessageId?: number | string;
 }
 
 /**
@@ -146,7 +152,7 @@ export class MessagePipeline {
     if (!text) {
       // 纯表情/纯图片：不带文本也要往下走，让上层处理
       // （上层会走表情学习流程或给一个短反应，绝不能在这里静默丢弃）
-      onReady({ action: 'reply', userId, text: '', mergedCount: 1, messageId, shouldQuote: false });
+      onReady({ action: 'reply', userId, text: '', mergedCount: 1, messageId, quotable: [] });
       return;
     }
 
@@ -164,7 +170,7 @@ export class MessagePipeline {
     const now = Date.now();
 
     if (existing) {
-      existing.texts.push(text);
+      existing.msgs.push({ text, messageId, at: now });
       clearTimeout(existing.timer);
 
       // 关键改动：静默期可以"续期"，但总时长有上限。
@@ -190,23 +196,22 @@ export class MessagePipeline {
 
     const entry: BufferEntry = {
       userId,
-      texts: [text],
+      msgs: [{ text, messageId, at: now }],
       firstAt: now,
-      firstMessageId: messageId,
       timer: setTimeout(() => this.flush(userId, onReady), this.cfg.mergeWindowMs),
     };
     this.buffers.set(userId, entry);
   }
 
   private flushNow(entry: BufferEntry, onReady: (d: PipelineDecision) => void): void {
-    this.processMerged(entry.userId, entry.texts, onReady, entry.firstMessageId);
+    this.processMerged(entry.userId, entry.msgs, onReady);
   }
 
   private flush(userId: string, onReady: (d: PipelineDecision) => void): void {
     const entry = this.buffers.get(userId);
     if (!entry) return;
     this.buffers.delete(userId);
-    this.processMerged(userId, entry.texts, onReady, entry.firstMessageId);
+    this.processMerged(userId, entry.msgs, onReady);
   }
 
   /**
@@ -214,55 +219,82 @@ export class MessagePipeline {
    *
    * 直觉：引用是"我专门针对你说的这件事回"。
    *   · 一句"在吗""嗯""哈哈" → 不需要引用，直接接话更自然
-   *   · 一整段话、连发好几条、或者带明确问题 → 引用能表明我在认真看
+  /**
+   * 挑出需要「单独引用回复」的消息。
    *
-   * 具体阈值（可调）：
-   *   · 合并条数 >= 2（他连发了几条）
-   *   · 总字数 >= 15（信息量够）
-   *   · 或者带问号（他在问具体的事）
-   * 任一满足就引用。
+   * 需求澄清：不是"长消息就引用"，而是**多条消息时挑几个重要的分别回**。
+   * 你连发几条、信息量很大时，她挑其中最有内容的分别引用回复，
+   * 而不是笼统回一句。单条消息永远不引用。
+   *
+   * 规则：
+   *   · msgs.length < 2     → 不引用
+   *   · 带问号              → 优先（他在问事）
+   *   · 字数多              → 次优先
+   *   · <= 3 字的           → 排除（"在吗""嗯"不值得单独引用）
+   *   · 最多挑 3 条，2 条消息时只挑 1 条
    */
-  shouldQuote(text: string, mergedCount: number): boolean {
-    const len = text.replace(/\s/g, '').length;
-    const hasQuestion = /[?？]/.test(text);
-    const multiLine = text.includes('\n');
+  pickQuotable(msgs: BufferedMsg[]): BufferedMsg[] {
+    if (msgs.length < 2) return [];
 
-    // 连发多条 → 引用能帮他看清我在回哪段
-    if (mergedCount >= 2) return true;
-    // 信息量够大
-    if (len >= 15) return true;
-    // 明确在问事
-    if (hasQuestion && len >= 6) return true;
-    // 他自己分段打字（多行）→ 引用更清楚
-    if (multiLine && len >= 8) return true;
+    const scored = msgs
+      .map((m) => {
+        const len = m.text.replace(/\s/g, '').length;
+        const isQuestion = /[?？]/.test(m.text);
+        const tooShort = len <= 3;
+        let score = len;
+        if (isQuestion) score += 20;
+        if (tooShort) score -= 100;
+        return { m, score };
+      })
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score);
 
-    return false;
+    if (scored.length === 0) return [];
+
+    const maxPick = msgs.length === 2 ? 1 : Math.min(3, scored.length);
+    const picked: BufferedMsg[] = [];
+    const usedTexts: string[] = [];
+
+    for (const s of scored) {
+      if (picked.length >= maxPick) break;
+      const dup = usedTexts.some(
+        (t) => t.includes(s.m.text.slice(0, 6)) || s.m.text.includes(t.slice(0, 6)),
+      );
+      if (dup) continue;
+      picked.push(s.m);
+      usedTexts.push(s.m.text);
+    }
+
+    // 按原始时间顺序返回
+    return picked.sort((a, b) => a.at - b.at);
   }
+
   /** 合并后的处理主逻辑 */
   private processMerged(
     userId: string,
-    texts: string[],
+    msgs: BufferedMsg[],
     onReady: (d: PipelineDecision) => void,
-    messageId?: number | string,
   ): void {
+    const texts = msgs.map((m) => m.text);
     const merged = texts.join('\n');
     const count = texts.length;
     const now = Date.now();
 
-    // ⚠️ 用户明确要求：他发了消息就必须有回复。
-    // 所以节流/冷却/刷屏跳过全部不生效——那些"智能沉默"在这里是 bug，不是特性。
-    // 仍然记录频率，方便日志观察，但绝不用来丢消息。
+    // 频率记录（仅日志观察用，不再用于丢消息）
     const floodWindow = this.cfg.throttle.floodWindowSeconds * 1000;
     for (let i = 0; i < count; i++) this.recentUserMessageTimes.push(now);
     this.recentUserMessageTimes = this.recentUserMessageTimes.filter((t) => now - t < floodWindow);
+
+    // 挑出要单独引用的那几条
+    const quotable = this.pickQuotable(msgs);
 
     onReady({
       action: 'reply',
       userId,
       text: merged,
       mergedCount: count,
-      messageId,
-      shouldQuote: this.shouldQuote(merged, count),
+      messageId: msgs[0]?.messageId,
+      quotable: quotable.map((q) => ({ text: q.text, messageId: q.messageId })),
     });
   }
 
