@@ -222,6 +222,41 @@ export class StickerLibrary {
    * 当前库里有多少张可用的表情。
    * 调用方用它来决定"该不该发"——池子太小就少发，别硬凑。
    */
+
+  /** 重新打标签（工具脚本用） */
+  retag(url: string, tags: string[]): void {
+    const s = this.stickers.find((x) => x.url === url);
+    if (!s) return;
+    s.tags = tags;
+    this.save();
+  }
+
+  /** 用给定 URL 列表补充库（工具脚本用，不依赖 adapter） */
+  async refreshGeneric(urls: string[]): Promise<number> {
+    if (!Array.isArray(urls) || urls.length === 0) return this.stickers.length;
+
+    const existing = new Map(this.stickers.map((s) => [s.url, s]));
+    for (const url of urls) {
+      if (this.blocklist.has(url)) continue;
+      const old = existing.get(url);
+      if (old) {
+        old.lastSeenAt = Date.now();
+        continue;
+      }
+      existing.set(url, {
+        id: url.split('/').slice(-2)[0] ?? url,
+        url,
+        tags: ['untagged'],
+        usedCount: 0,
+        lastUsedAt: 0,
+        addedAt: Date.now(),
+        lastSeenAt: Date.now(),
+      } as Sticker);
+    }
+    this.stickers = [...existing.values()];
+    this.save();
+    return this.stickers.length;
+  }
   size(): number {
     return this.stickers.length;
   }

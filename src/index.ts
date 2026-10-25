@@ -176,7 +176,7 @@ async function main(): Promise<void> {
 
   // ── 后处理 ──────────────────────────────────────────────
   const stickers = new StickerLibrary(store, logger);
-  const learner = new StickerLearner(store, logger);
+  const learner = new StickerLearner(store, logger, llm);
 
   // 最近发过的表情包（跨轮次），用于避免短时间内重复同一张。
   // 这是"人机感"的主要来源之一：库里只有几张时，不复用就会露馅。
@@ -582,6 +582,8 @@ async function main(): Promise<void> {
   proactive.start();
 
   adapter.on('event', (event: OneBotEvent) => {
+    // 注意：这里保持同步签名，内部需要的异步逻辑各自用 IIFE 包，
+    // 表情学习那段因为是 await，单独包一层（见下）
     try {
       if (event.post_type === 'message') {
         // 睡眠拦截：分三种情况
@@ -641,13 +643,22 @@ async function main(): Promise<void> {
               return;
             }
           }
-
           // 2) 有未确认的表情，试着从这句话里学
+          //    LLM 理解是异步的，用 IIFE 包起来不阻塞主流程。
           if (text && learner.hasPending()) {
-            const learned = learner.tryLearnFromReply(text);
-            if (learned) {
-              logger.info({ meaning: learned.meaning, scenes: learned.scenes }, '学会表情含义');
-            }
+            void (async () => {
+              try {
+                const learned = await learner.tryLearnFromReply(text);
+                if (learned) {
+                  logger.info(
+                    { meaning: learned.meaning, scenes: learned.scenes },
+                    '学会表情含义（LLM 理解）',
+                  );
+                }
+              } catch (err) {
+                logger.warn({ err: (err as Error).message }, '学习表情失败');
+              }
+            })();
           }
 
           if (text) {

@@ -1,4 +1,6 @@
 import type { Logger } from 'pino';
+import type { LLMClient } from '../brain/llm';
+import { understandSticker } from './sticker-understand';
 import type { Store } from '../store/db';
 
 /**
@@ -84,10 +86,19 @@ export class StickerLearner {
   /** 问过但还没得到答案的图，避免重复问 */
   private askedUrls = new Set<string>();
 
-  constructor(store: Store, logger: Logger) {
+  /** 可选：注入后会用 LLM 理解表情含义（比关键词匹配准得多） */
+  private llm: LLMClient | null = null;
+
+  constructor(store: Store, logger: Logger, llm?: LLMClient) {
     this.store = store;
     this.logger = logger;
+    this.llm = llm ?? null;
     this.load();
+  }
+
+  /** 后置注入（index.ts 里 llm 可能晚于 learner 创建） */
+  bindLlm(llm: LLMClient): void {
+    this.llm = llm;
   }
 
   private load(): void {
@@ -172,7 +183,14 @@ export class StickerLearner {
    *
    * 如果用户说"不知道"、"随便发的"、"没啥意思"，则放弃学习。
    */
-  tryLearnFromReply(reply: string): LearnedSticker | null {
+  /**
+   * 从用户的回复里学这张表情的含义。
+   *
+   * 改成 async 是为了让 LLM 参与理解——纯关键词匹配会漏掉
+   * "嘲讽你""阴阳怪气"这类说法，学到的标签是错的，
+   * 后续按场景挑图就会挑错，等于"没真懂"。
+   */
+  async tryLearnFromReply(reply: string): Promise<LearnedSticker | null> {
     if (!this.pending) return null;
 
     const pending = this.pending;
@@ -186,19 +204,19 @@ export class StickerLearner {
       return null;
     }
 
-    const meaning = extractMeaning(reply);
-    if (!meaning) {
+    // 让 LLM 真正理解，而不是硬匹配关键词
+    const understood = await understandSticker(reply, this.llm, this.logger);
+    if (!understood) {
       // 解析不出来，保留 pending，让她下次再问
       this.logger.debug({ reply }, '没解析出表情的意思');
       return null;
     }
 
-    const scenes = mapMeaningToScenes(meaning);
     const learned: LearnedSticker = {
       url: pending.url,
-      meaning,
+      meaning: understood.meaning,
       description: reply.trim().slice(0, 100),
-      scenes,
+      scenes: understood.scenes,
       learnedAt: Date.now(),
       usedCount: 0,
       lastUsedAt: 0,
@@ -208,7 +226,7 @@ export class StickerLearner {
     this.learned.set(stickerKey(pending.url), learned);
     this.pending = null;
     this.save();
-    this.logger.info({ meaning, scenes }, '学会了一张新表情');
+    this.logger.info({ meaning: understood.meaning, scenes: understood.scenes }, '学会了一张新表情');
     return learned;
   }
 
