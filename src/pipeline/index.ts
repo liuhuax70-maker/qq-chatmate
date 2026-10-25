@@ -21,7 +21,23 @@ export interface PipelineConfig {
 }
 
 export type PipelineDecision =
-  | { action: 'reply'; userId: string; text: string; mergedCount: number; messageId?: number | string }
+  | {
+      action: 'reply';
+      userId: string;
+      text: string;
+      mergedCount: number;
+      messageId?: number | string;
+      /**
+       * 是否值得引用回复。
+       *
+       * 引用是"针对某条具体消息"的回应，只在信息量大时才自然：
+       *   · 他只发一句"在吗" → 直接回，引用反而显得郑重
+       *   · 他发了一大段或多条 → 引用能表明"我在认真回你说的那件事"
+       *
+       * 判断规则见 shouldQuote()。
+       */
+      shouldQuote: boolean;
+    }
   | { action: 'drop'; reason: string };
 
 interface BufferEntry {
@@ -130,7 +146,7 @@ export class MessagePipeline {
     if (!text) {
       // 纯表情/纯图片：不带文本也要往下走，让上层处理
       // （上层会走表情学习流程或给一个短反应，绝不能在这里静默丢弃）
-      onReady({ action: 'reply', userId, text: '', mergedCount: 1, messageId });
+      onReady({ action: 'reply', userId, text: '', mergedCount: 1, messageId, shouldQuote: false });
       return;
     }
 
@@ -193,6 +209,35 @@ export class MessagePipeline {
     this.processMerged(userId, entry.texts, onReady, entry.firstMessageId);
   }
 
+  /**
+   * 判断这条消息值不值得引用回复。
+   *
+   * 直觉：引用是"我专门针对你说的这件事回"。
+   *   · 一句"在吗""嗯""哈哈" → 不需要引用，直接接话更自然
+   *   · 一整段话、连发好几条、或者带明确问题 → 引用能表明我在认真看
+   *
+   * 具体阈值（可调）：
+   *   · 合并条数 >= 2（他连发了几条）
+   *   · 总字数 >= 15（信息量够）
+   *   · 或者带问号（他在问具体的事）
+   * 任一满足就引用。
+   */
+  shouldQuote(text: string, mergedCount: number): boolean {
+    const len = text.replace(/\s/g, '').length;
+    const hasQuestion = /[?？]/.test(text);
+    const multiLine = text.includes('\n');
+
+    // 连发多条 → 引用能帮他看清我在回哪段
+    if (mergedCount >= 2) return true;
+    // 信息量够大
+    if (len >= 15) return true;
+    // 明确在问事
+    if (hasQuestion && len >= 6) return true;
+    // 他自己分段打字（多行）→ 引用更清楚
+    if (multiLine && len >= 8) return true;
+
+    return false;
+  }
   /** 合并后的处理主逻辑 */
   private processMerged(
     userId: string,
@@ -211,7 +256,14 @@ export class MessagePipeline {
     for (let i = 0; i < count; i++) this.recentUserMessageTimes.push(now);
     this.recentUserMessageTimes = this.recentUserMessageTimes.filter((t) => now - t < floodWindow);
 
-    onReady({ action: 'reply', userId, text: merged, mergedCount: count, messageId });
+    onReady({
+      action: 'reply',
+      userId,
+      text: merged,
+      mergedCount: count,
+      messageId,
+      shouldQuote: this.shouldQuote(merged, count),
+    });
   }
 
   markReplied(): void {

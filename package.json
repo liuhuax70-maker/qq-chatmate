@@ -21,7 +21,8 @@
     "test:session": "tsx tests/session.ts",
     "test:memory": "tsx tests/memory.ts",
     "test:tts": "tsx tests/tts.ts",
-    "test:skills": "tsx tests/skills.ts"
+    "test:skills": "tsx tests/skills.ts",
+    "test:quote": "tsx tests/quote.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",

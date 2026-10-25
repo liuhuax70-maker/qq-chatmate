@@ -297,7 +297,10 @@ async function main(): Promise<void> {
     userId: string,
     text: string,
     replyTo?: number | string,
+    quote = false,
   ): Promise<void> => {
+    // 不引用时清空 replyTo，否则会无条件带上引用段（引用只在信息量大时才自然）
+    const effectiveReplyTo = quote ? replyTo : undefined;
     const release = await session.acquireLock();
     try {
       session.recordUser(text);
@@ -342,7 +345,7 @@ async function main(): Promise<void> {
         session.recordAssistant(fb);
         try {
           for (const seg of post.split(fb)) {
-            await adapter.sendPrivateMessageSegments(userId, post.toSegments(seg), replyTo);
+            await adapter.sendPrivateMessageSegments(userId, post.toSegments(seg), effectiveReplyTo);
           }
         } catch { /* 发送失败也无所谓，至少记录过了 */ }
         return;
@@ -450,7 +453,7 @@ async function main(): Promise<void> {
           await adapter.sendPrivateMessageSegments(
             userId,
             msgSegments,
-            i === 0 ? replyTo : undefined,
+            i === 0 ? effectiveReplyTo : undefined,
           );
         }
       }
@@ -543,7 +546,7 @@ async function main(): Promise<void> {
       try {
         const fb = ['嗯', '在', '刚走神了', '你说', '6'];
         const pick = fb[Math.floor(Math.random() * fb.length)];
-        await adapter.sendPrivateMessageSegments(userId, post.toSegments(pick), replyTo);
+        await adapter.sendPrivateMessageSegments(userId, post.toSegments(pick), effectiveReplyTo);
       } catch { /* 发送也失败就真的没办法了 */ }
     } finally {
       release();
@@ -637,7 +640,7 @@ async function main(): Promise<void> {
               if (text) {
                 const verdict = proactive.sleep.onUserMessage(text);
                 if (verdict.respond) {
-                  void handleReply(uid, '[发了张表情]', evMsgId);
+                  void handleReply(uid, '[发了张表情]', evMsgId, false);
                 }
               }
               return;
@@ -669,14 +672,23 @@ async function main(): Promise<void> {
                 { chars: text.length, reason: verdict.reason, phase: proactive.sleep.phase() },
                 '睡眠判定为不回（不应发生），强制回复',
               );
-              void handleReply(uid, text, evMsgId);
+              void handleReply(uid, text, evMsgId, false);
               return;
             }
             // 被吵醒后慢一点，但最多 10 秒——不能让你干等一两分钟
             if (verdict.delayMs > 0) {
               const wait = Math.min(verdict.delayMs, 10_000);
               logger.info({ delayMs: verdict.delayMs, actualWaitMs: wait }, '被吵醒，稍慢回复');
-              setTimeout(() => void handleReply(uid, text, evMsgId), wait);
+              setTimeout(
+                () =>
+                  void handleReply(
+                    uid,
+                    text,
+                    evMsgId,
+                    text.replace(/\s/g, '').length >= 15 || /[?？]/.test(text),
+                  ),
+                wait,
+              );
               return;
             }
           }
@@ -684,7 +696,7 @@ async function main(): Promise<void> {
 
         pipeline.accept(event, (decision) => {
           if (decision.action === 'reply') {
-            void handleReply(decision.userId, decision.text, decision.messageId);
+            void handleReply(decision.userId, decision.text, decision.messageId, decision.shouldQuote);
           }
         });
         return;
