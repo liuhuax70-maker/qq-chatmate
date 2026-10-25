@@ -41,7 +41,7 @@ if not exist "%MANIFEST%" (
 set "COMMON=/nologo /reference:System.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /win32manifest:"%MANIFEST%""
 
 echo [1/2] Building GUI version...
-"%CSC%" /target:winexe /out:"%HERE%¾¨ÄÎÆô¶¯Æ÷.exe" %COMMON% "%SRC%"
+"%CSC%" /target:winexe /out:"%HERE%´ó·ÊÓã.exe" %COMMON% "%SRC%"
 if errorlevel 1 (
   echo [FAILED] GUI build failed
   pause
@@ -49,7 +49,7 @@ if errorlevel 1 (
 )
 
 echo [2/2] Building console version...
-"%CSC%" /target:exe /out:"%HERE%¾¨ÄÎ×´Ì¬.exe" %COMMON% "%SRC%"
+"%CSC%" /target:exe /out:"%HERE%´ó·ÊÓã.exe" %COMMON% "%SRC%"
 if errorlevel 1 (
   echo [FAILED] console build failed
   pause
@@ -58,8 +58,8 @@ if errorlevel 1 (
 
 echo.
 echo [DONE]
-echo    %HERE%¾¨ÄÎÆô¶¯Æ÷.exe
-echo    %HERE%¾¨ÄÎ×´Ì¬.exe
+echo    %HERE%´ó·ÊÓã.exe
+echo    %HERE%´ó·ÊÓã.exe
 echo.
 pause
 endlocal

@@ -12,7 +12,7 @@ using System.Windows.Forms;
 namespace QQChatmateLauncher
 {
     /// <summary>
-    /// 鲸奈 · QQ 网友 一键启动器
+    /// 大肥鱼 · QQ 网友 一键启动器
     ///
     /// 管理四个组件：机器人主程序 / NapCat 协议端 / 签名服务 / TTS
     /// 编译为单文件 .exe，.NET Framework 4 自带，无需额外运行时。
@@ -724,7 +724,7 @@ namespace QQChatmateLauncher
             bool tts = TestPort(9880);
 
             Console.WriteLine();
-            Console.WriteLine("=== 鲸奈 · QQ 网友 组件状态 ===");
+            Console.WriteLine("=== 大肥鱼 · QQ 网友 组件状态 ===");
             Console.WriteLine();
             PrintLine(bot, "机器人主程序", "端口 3000/8080");
             PrintLine(lag, "NapCat 协议端", lag && bot ? "在线" : (lag ? "未连上机器人" : "未运行"));
@@ -782,7 +782,7 @@ namespace QQChatmateLauncher
         public LauncherForm(bool startMinimized)
         {
             _startMinimized = startMinimized;
-            Text = "鲸奈 · QQ 网友 启动器";
+            Text = "大肥鱼 · QQ 网友 启动器";
             ClientSize = new Size(560, 820);
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = BgColor;
@@ -793,7 +793,7 @@ namespace QQChatmateLauncher
 
             var title = new Label
             {
-                Text = "鲸奈 · QQ 网友",
+                Text = "大肥鱼 · QQ 网友",
                 Font = new Font("Microsoft YaHei UI", 15f, FontStyle.Bold),
                 ForeColor = BlueColor,
                 Location = new Point(24, 16),
