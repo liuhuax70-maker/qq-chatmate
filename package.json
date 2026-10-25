@@ -16,6 +16,7 @@
     "test:stickers": "tsx tests/stickers.ts",
     "test:stickerkey": "tsx tests/sticker-key.ts",
     "test:prompt": "tsx tests/prompt.ts",
+    "test:diary": "tsx tests/diary.ts",
     "cost": "tsx tests/cost.ts",
     "check:llm": "tsx tests/check-llm.ts",
     "test:session": "tsx tests/session.ts",

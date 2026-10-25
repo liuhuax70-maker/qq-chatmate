@@ -23,6 +23,13 @@ export interface HttpContext {
     keepOnly: (urls: string[]) => { removed: number; kept: number };
     refresh: () => Promise<number>;
   };
+  /** 日记：给启动器读今天写了什么、列出历史文件 */
+  diary?: {
+    enabled: boolean;
+    dir: string;
+    readToday: () => string;
+    list: () => Array<{ date: string; file: string; size: number }>;
+  };
   /** 控制面板（监控 + 启停） */
   panel?: ControlPanel;
 }
@@ -65,6 +72,35 @@ export function startHttpServer(opts: HttpOptions, ctx: HttpContext, logger: Log
             mood: Number(s.mood.toFixed(3)),
             turns: s.turns,
             sleep: ctx.getSleepState?.() ?? 'n/a',
+            diary: ctx.diary
+              ? { enabled: ctx.diary.enabled, dir: ctx.diary.dir }
+              : { enabled: false, dir: '' },
+          }),
+        );
+        return;
+      }
+
+      // 日记：今天的内容 / 历史文件列表
+      if (url === '/api/diary/today') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            enabled: ctx.diary?.enabled ?? false,
+            dir: ctx.diary?.dir ?? '',
+            content: ctx.diary?.readToday() ?? '',
+          }),
+        );
+        return;
+      }
+      if (url === '/api/diary/list') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            enabled: ctx.diary?.enabled ?? false,
+            dir: ctx.diary?.dir ?? '',
+            files: ctx.diary?.list() ?? [],
           }),
         );
         return;

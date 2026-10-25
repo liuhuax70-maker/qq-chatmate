@@ -1791,31 +1791,44 @@ namespace QQChatmateLauncher
         }
     }
 
+
     /// <summary>
     /// 人格编辑器。
     ///
-    /// 需求：在 exe 里载入人格设置，并给予修改权限。
-    /// 之前改人设要去翻 config/personas/default.yaml 和 config/prompts/system.md，
-    /// 对不熟文件结构的人很不友好。这个窗口把关键字段做成表单。
+    /// 需求（2026-10-26 更新）：
+    ///   「exe 文件中可以设置有参数的部分人格，其它人格特性仅供展示。」
     ///
-    /// 设计取舍：
-    ///   - 常用字段做成输入框（名字、自称、年龄、口头禅、米饭执念等）
-    ///   - 长文本（背景、性格）用多行文本框
-    ///   - 保留「打开原始文件」按钮，给需要精修的人用
-    ///   - 保存后提示需要重启机器人才能生效（配置是启动时加载的）
+    /// 也就是分成两类：
+    ///   【可编辑】参数化人格 —— 名字、自称、年龄、口癖、人设事实、背景、
+    ///             日记目录、日记开关。这些是"数据"，改了直接生效。
+    ///   【只展示】固定人格 —— 性格、语气、真人感规则、硬红线。
+    ///             这些是"设定文本"（system.md），层级太深，
+    ///             做成表单既表达不了，也容易被改坏。只读显示 + 可打开原文精修。
+    ///
+    /// 为什么这么分：
+    ///   可编辑的都是"一眼知道填什么"的字段；
+    ///   不可编辑的是"大段行为描述"，用输入框改反而会毁掉结构。
     /// </summary>
     public class PersonaForm : Form
     {
         private string _baseDir;
+
+        // ── 可编辑：人格参数 ──────────────────────────────
         private TextBox _name;
         private TextBox _selfClaim;
         private TextBox _age;
-        private TextBox _background;
         private TextBox _habitWords;
-        /// <summary>人设事实：一行一条，注入 system.md 的 &lt;about-self&gt;。
-        /// 以前这里是「性格备注」（写 tone），但 tone 已废弃、也不注入 prompt，
-        /// 填了完全没效果。改成 facts 之后编辑才真的影响人格。</summary>
         private TextBox _facts;
+        private TextBox _background;
+
+        // ── 可编辑：日记 ──────────────────────────────────
+        private CheckBox _diaryEnabled;
+        private TextBox _diaryDir;
+        private Label _diaryPreview;
+
+        // ── 只展示 ────────────────────────────────────────
+        private TextBox _viewOnly;
+
         private Label _status;
 
         private static readonly Color BgColor = Color.FromArgb(15, 23, 42);
@@ -1836,120 +1849,261 @@ namespace QQChatmateLauncher
             get { return Path.Combine(_baseDir, @"qq-netizen\config\prompts\system.md"); }
         }
 
+        private string RulesPath
+        {
+            get { return Path.Combine(_baseDir, @"qq-netizen\config\prompts\rules.md"); }
+        }
+
+        private string ConfigPath
+        {
+            get { return Path.Combine(_baseDir, @"qq-netizen\config\default.yaml"); }
+        }
+
+        private string LocalConfigPath
+        {
+            get { return Path.Combine(_baseDir, @"qq-netizen\config\local.yaml"); }
+        }
+
         public PersonaForm(string baseDir)
         {
             _baseDir = baseDir;
 
             Text = "人格设定";
-            Size = new Size(640, 720);
+            Size = new Size(700, 760);
             StartPosition = FormStartPosition.CenterParent;
             BackColor = BgColor;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
 
-            int y = 16;
-
-            AddLabel("名字", 20, y);
-            _name = AddText(100, y, 480);
-            y += 38;
-
-            AddLabel("自称", 20, y);
-            _selfClaim = AddText(100, y, 200);
-            AddLabel("年龄", 320, y);
-            _age = AddText(380, y, 200);
-            y += 38;
-
-            AddLabel("口头禅", 20, y);
-            _habitWords = AddText(100, y, 480);
-            AddTooltip("用中文逗号分隔，例如：呃，哼，先说好（会注入 <voice>）");
-            y += 38;
-
-            AddLabel("人设事实", 20, y);
-            AddTooltip("一行一条，会注入 <about-self>。例如：把米饭当主食 / 自称鲸鱼");
-            _facts = new TextBox
+            var tabs = new TabControl
             {
-                Location = new Point(100, y),
-                Size = new Size(480, 70),
-                Multiline = true,
-                ScrollBars = ScrollBars.Vertical,
-                BackColor = CardColor,
-                ForeColor = TextColor,
-                BorderStyle = BorderStyle.FixedSingle,
+                Location = new Point(12, 12),
+                Size = new Size(668, 620),
                 Font = new Font("Microsoft YaHei UI", 9.5f)
             };
-            Controls.Add(_facts);
-            y += 80;
+            Controls.Add(tabs);
 
-            AddLabel("背景设定", 20, y);
-            _background = new TextBox
-            {
-                Location = new Point(100, y),
-                Size = new Size(480, 90),
-                Multiline = true,
-                ScrollBars = ScrollBars.Vertical,
-                BackColor = CardColor,
-                ForeColor = TextColor,
-                BorderStyle = BorderStyle.FixedSingle,
-                Font = new Font("Microsoft YaHei UI", 9.5f)
-            };
-            Controls.Add(_background);
-            y += 100;
-
-            // 说明
-            var tip = new Label
-            {
-                Text = "性格、说话方式等大段设定在 system.md 里，点下方按钮打开原文编辑。",
-                ForeColor = MutedColor,
-                Location = new Point(20, y),
-                Size = new Size(560, 20)
-            };
-            Controls.Add(tip);
-            y += 32;
+            tabs.TabPages.Add(BuildParamPage());
+            tabs.TabPages.Add(BuildDiaryPage());
+            tabs.TabPages.Add(BuildViewOnlyPage());
 
             // 按钮区
-            var btnSave = MakeButton("保存", 20, y, 130, BlueColor, BgColor);
+            int by = 644;
+            var btnSave = MakeButton("保存", 20, by, 130, BlueColor, BgColor);
             btnSave.Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold);
             btnSave.Click += (s, e) => SavePersona();
             Controls.Add(btnSave);
 
-            var btnReload = MakeButton("重新载入", 160, y, 130, CardColor, TextColor);
+            var btnReload = MakeButton("重新载入", 160, by, 130, CardColor, TextColor);
             btnReload.Click += (s, e) => LoadPersona();
             Controls.Add(btnReload);
 
-            var btnOpenYaml = MakeButton("打开原始文件", 300, y, 140, CardColor, MutedColor);
+            var btnOpenYaml = MakeButton("原始人格文件", 300, by, 150, CardColor, MutedColor);
             btnOpenYaml.Click += (s, e) => OpenFile(PersonaPath);
             Controls.Add(btnOpenYaml);
 
-            var btnOpenSystem = MakeButton("打开性格设定", 450, y, 140, CardColor, MutedColor);
+            var btnOpenSystem = MakeButton("性格设定原文", 460, by, 150, CardColor, MutedColor);
             btnOpenSystem.Click += (s, e) => OpenFile(PromptPath);
             Controls.Add(btnOpenSystem);
-            y += 48;
 
             _status = new Label
             {
                 Text = "",
                 ForeColor = MutedColor,
-                Location = new Point(20, y),
-                Size = new Size(580, 40)
+                Location = new Point(20, 682),
+                Size = new Size(660, 36)
             };
             Controls.Add(_status);
 
             LoadPersona();
         }
 
-        private void AddLabel(string text, int x, int y)
+        // ── 标签页 1：可编辑的人格参数 ─────────────────────
+        private TabPage BuildParamPage()
+        {
+            var page = new TabPage("人格参数（可修改）")
+            {
+                BackColor = BgColor,
+                ForeColor = TextColor
+            };
+
+            int y = 16;
+
+            AddLabel(page, "名字", 16, y);
+            _name = AddText(page, 100, y, 480);
+            y += 38;
+
+            AddLabel(page, "自称", 16, y);
+            _selfClaim = AddText(page, 100, y, 180);
+            AddLabel(page, "年龄", 300, y);
+            _age = AddText(page, 360, y, 220);
+            y += 38;
+
+            AddLabel(page, "口头禅", 16, y);
+            _habitWords = AddText(page, 100, y, 480);
+            AddHint(page, "中文逗号分隔，例如：呃，哼，先说好 —— 会注入 <voice>", 100, y + 28);
+            y += 56;
+
+            AddLabel(page, "人设事实", 16, y);
+            _facts = AddMultiline(page, 100, y, 480, 90);
+            AddHint(page, "一行一条，会注入 <about-self>。例如：把米饭当主食", 100, y + 92);
+            y += 122;
+
+            AddLabel(page, "背景设定", 16, y);
+            _background = AddMultiline(page, 100, y, 480, 100);
+            AddHint(page, "整段背景，会注入 <role> 开头", 100, y + 102);
+            y += 132;
+
+            var note = new Label
+            {
+                Text = "这些是「参数化」的部分，改完保存、重启机器人就生效。"
+                     + "\n性格、语气、红线等固定设定见「固定人格（只读）」页。",
+                ForeColor = MutedColor,
+                Location = new Point(16, y),
+                Size = new Size(620, 44)
+            };
+            page.Controls.Add(note);
+
+            return page;
+        }
+
+        // ── 标签页 2：日记 ─────────────────────────────────
+        private TabPage BuildDiaryPage()
+        {
+            var page = new TabPage("日记（可修改）")
+            {
+                BackColor = BgColor,
+                ForeColor = TextColor
+            };
+
+            int y = 16;
+
+            _diaryEnabled = new CheckBox
+            {
+                Text = "启用日记",
+                Checked = true,
+                ForeColor = TextColor,
+                Location = new Point(16, y),
+                Size = new Size(200, 24)
+            };
+            page.Controls.Add(_diaryEnabled);
+            y += 40;
+
+            AddLabel(page, "日记目录", 16, y);
+            _diaryDir = AddText(page, 100, y, 400);
+            var btnBrowse = MakeButton("浏览…", 510, y - 4, 90, CardColor, TextColor);
+            btnBrowse.Click += (s, e) => BrowseDiaryDir();
+            page.Controls.Add(btnBrowse);
+            y += 30;
+
+            var hint = new Label
+            {
+                Text = "以第二人称（「你」= 阿龙）记录，一天一个 .md 文件。"
+                     + "\n目录不存在会自动创建。",
+                ForeColor = MutedColor,
+                Location = new Point(100, y),
+                Size = new Size(500, 40)
+            };
+            page.Controls.Add(hint);
+            y += 52;
+
+            _diaryPreview = new Label
+            {
+                Text = "",
+                ForeColor = BlueColor,
+                Location = new Point(16, y),
+                Size = new Size(620, 60)
+            };
+            page.Controls.Add(_diaryPreview);
+            y += 70;
+
+            var btnOpenDir = MakeButton("打开日记文件夹", 16, y, 160, CardColor, TextColor);
+            btnOpenDir.Click += (s, e) => OpenDiaryDir();
+            page.Controls.Add(btnOpenDir);
+
+            var btnToday = MakeButton("看今天写了什么", 186, y, 160, CardColor, TextColor);
+            btnToday.Click += (s, e) => ShowTodayDiary();
+            page.Controls.Add(btnToday);
+            y += 50;
+
+            var note = new Label
+            {
+                Text = "写什么：你说自己事的时候，有情绪、有分量的那种。"
+                     + "\n不写什么：寒暄、问句、指令、无意义的吐槽。"
+                     + "\n（每条会先判断值不值得记，值得才写入文件）",
+                ForeColor = MutedColor,
+                Location = new Point(16, y),
+                Size = new Size(620, 70)
+            };
+            page.Controls.Add(note);
+
+            return page;
+        }
+
+        // ── 标签页 3：固定人格（只读展示）───────────────────
+        private TabPage BuildViewOnlyPage()
+        {
+            var page = new TabPage("固定人格（只读）")
+            {
+                BackColor = BgColor,
+                ForeColor = TextColor
+            };
+
+            var hint = new Label
+            {
+                Text = "这些是固定的行为设定，不在表单里改。"
+                     + "\n要精修就点下面的「性格设定原文」按钮，直接编辑 system.md。",
+                ForeColor = MutedColor,
+                Location = new Point(16, 12),
+                Size = new Size(620, 40)
+            };
+            page.Controls.Add(hint);
+
+            _viewOnly = new TextBox
+            {
+                Location = new Point(16, 56),
+                Size = new Size(628, 540),
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical,
+                BackColor = Color.FromArgb(22, 30, 46),
+                ForeColor = Color.FromArgb(203, 213, 225),
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Consolas", 9f),
+                WordWrap = true
+            };
+            page.Controls.Add(_viewOnly);
+
+            return page;
+        }
+
+        // ── UI 小工具 ──────────────────────────────────────
+        private void AddLabel(Control parent, string text, int x, int y)
         {
             var lb = new Label
             {
                 Text = text,
                 ForeColor = MutedColor,
                 Location = new Point(x, y + 4),
-                Size = new Size(76, 22)
+                Size = new Size(80, 22)
             };
-            Controls.Add(lb);
+            parent.Controls.Add(lb);
         }
 
-        private TextBox AddText(int x, int y, int w)
+        private void AddHint(Control parent, string text, int x, int y)
+        {
+            var lb = new Label
+            {
+                Text = text,
+                ForeColor = Color.FromArgb(100, 116, 139),
+                Location = new Point(x, y),
+                Size = new Size(500, 20),
+                Font = new Font("Microsoft YaHei UI", 8f)
+            };
+            parent.Controls.Add(lb);
+        }
+
+        private TextBox AddText(Control parent, int x, int y, int w)
         {
             var tb = new TextBox
             {
@@ -1960,11 +2114,26 @@ namespace QQChatmateLauncher
                 BorderStyle = BorderStyle.FixedSingle,
                 Font = new Font("Microsoft YaHei UI", 9.5f)
             };
-            Controls.Add(tb);
+            parent.Controls.Add(tb);
             return tb;
         }
 
-        private void AddTooltip(string tip) { /* 简化：不挂 ToolTip 组件，避免资源泄漏 */ }
+        private TextBox AddMultiline(Control parent, int x, int y, int w, int h)
+        {
+            var tb = new TextBox
+            {
+                Location = new Point(x, y),
+                Size = new Size(w, h),
+                Multiline = true,
+                ScrollBars = ScrollBars.Vertical,
+                BackColor = CardColor,
+                ForeColor = TextColor,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Microsoft YaHei UI", 9.5f)
+            };
+            parent.Controls.Add(tb);
+            return tb;
+        }
 
         private Button MakeButton(string text, int x, int y, int w, Color back, Color fore)
         {
@@ -1981,10 +2150,7 @@ namespace QQChatmateLauncher
             return b;
         }
 
-        /// <summary>
-        /// 从 default.yaml 里读出关键字段。
-        /// 用极简的逐行解析——不引入 YAML 库，够用就行。
-        /// </summary>
+        // ── 载入 ──────────────────────────────────────────
         private void LoadPersona()
         {
             try
@@ -1998,26 +2164,22 @@ namespace QQChatmateLauncher
                 string[] lines = File.ReadAllLines(PersonaPath, Encoding.UTF8);
                 foreach (string raw in lines)
                 {
-                    string line = raw.TrimEnd();
-                    string trimmed = line.TrimStart();
+                    string trimmed = raw.TrimStart();
                     if (trimmed.StartsWith("#")) continue;
 
-                    if (trimmed.StartsWith("name:"))
-                        _name.Text = ValueOf(trimmed, "name:");
-                    else if (trimmed.StartsWith("selfClaim:"))
-                        _selfClaim.Text = ValueOf(trimmed, "selfClaim:");
-                    else if (trimmed.StartsWith("age:"))
-                        _age.Text = ValueOf(trimmed, "age:");
-                    else if (trimmed.StartsWith("habitWords:"))
-                        _habitWords.Text = ParseYamlList(ValueOf(trimmed, "habitWords:"));
-                    else if (trimmed.StartsWith("background:"))
-                        _background.Text = ValueOf(trimmed, "background:").Trim('>', ' ', '|');
+                    if (trimmed.StartsWith("name:")) _name.Text = ValueOf(trimmed, "name:");
+                    else if (trimmed.StartsWith("selfClaim:")) _selfClaim.Text = ValueOf(trimmed, "selfClaim:");
+                    else if (trimmed.StartsWith("age:")) _age.Text = ValueOf(trimmed, "age:");
+                    else if (trimmed.StartsWith("habitWords:")) _habitWords.Text = ParseYamlList(ValueOf(trimmed, "habitWords:"));
+                    else if (trimmed.StartsWith("background:")) _background.Text = ValueOf(trimmed, "background:").Trim('>', ' ', '|');
                 }
 
-                // facts 是 YAML 列表，单独扫一遍（在 facts: 下面，每行 "- 内容"）
                 _facts.Text = ParseYamlBlockList(lines, "facts:");
 
-                SetMsg("已载入人格设定", GreenColor);
+                LoadDiaryConfig();
+                LoadViewOnly();
+
+                SetMsg("已载入", GreenColor);
             }
             catch (Exception ex)
             {
@@ -2025,16 +2187,354 @@ namespace QQChatmateLauncher
             }
         }
 
-        private static string ValueOf(string line, string key)
+        /// <summary>日记配置：先读 local.yaml（用户改过的），没有再读 default.yaml</summary>
+        private void LoadDiaryConfig()
         {
-            string v = line.Substring(key.Length).Trim();
-            // 去掉行尾注释
-            int hash = v.IndexOf(" #");
-            if (hash > 0) v = v.Substring(0, hash).Trim();
-            return v;
+            string dir = "";
+            bool enabled = true;
+
+            foreach (string file in new[] { LocalConfigPath, ConfigPath })
+            {
+                if (!File.Exists(file)) continue;
+                try
+                {
+                    string[] lines = File.ReadAllLines(file, Encoding.UTF8);
+                    bool inDiary = false;
+                    bool foundHere = false;
+                    string dirHere = "";
+                    bool enabledHere = true;
+
+                    foreach (string raw in lines)
+                    {
+                        string trimmed = raw.TrimStart();
+                        if (trimmed.StartsWith("#")) continue;
+                        if (!inDiary)
+                        {
+                            if (trimmed.StartsWith("diary:")) inDiary = true;
+                            continue;
+                        }
+                        // diary 块到下一个顶层 key 结束（缩进归零）
+                        if (trimmed.Length > 0 && raw.Length - trimmed.Length == 0) break;
+                        if (trimmed.Length == 0) continue;
+
+                        if (trimmed.StartsWith("enabled:"))
+                        {
+                            enabledHere = trimmed.IndexOf("false", StringComparison.OrdinalIgnoreCase) < 0;
+                            foundHere = true;
+                        }
+                        else if (trimmed.StartsWith("dir:"))
+                        {
+                            string v = ValueOf(trimmed, "dir:").Trim('"', '\'');
+                            // YAML 双引号里反斜杠要写成 \\，读回来必须还原成单个 \
+                            v = v.Replace("\\\\", "\\");
+                            if (v.Length > 0) { dirHere = v; foundHere = true; }
+                        }
+                    }
+
+                    if (foundHere && dirHere.Length > 0)
+                    {
+                        dir = dirHere;
+                        enabled = enabledHere;
+                        break;
+                    }
+                }
+                catch { }
+            }
+
+            if (dir.Length == 0) dir = @"D:\日记";
+            _diaryDir.Text = dir;
+            _diaryEnabled.Checked = enabled;
+            UpdateDiaryPreview();
         }
 
-        /// <summary>把人设事实按 YAML 列表写出去（一行一条）。</summary>
+        /// <summary>只读展示：把 system.md 的段落标题 + 关键行为约束列出来</summary>
+        private void LoadViewOnly()
+        {
+            var sb = new StringBuilder();
+
+            try
+            {
+                if (File.Exists(PromptPath))
+                {
+                    string[] lines = File.ReadAllLines(PromptPath, Encoding.UTF8);
+                    string current = null;
+                    var body = new StringBuilder();
+                    var titles = new Dictionary<string, string>
+                    {
+                        { "role", "身份 / 关系" },
+                        { "bond", "创造者 / 父亲" },
+                        { "character", "性格" },
+                        { "voice", "语气 / 说话方式" },
+                        { "human", "真人感规则" },
+                        { "reactions", "反应方式" },
+                        { "limits", "硬约束" },
+                        { "pacing", "节奏" },
+                        { "about-self", "关于自己" },
+                    };
+
+                    Action flush = null;
+                    flush = () =>
+                    {
+                        if (current != null && body.Length > 0)
+                        {
+                            sb.AppendLine("【" + (titles.ContainsKey(current) ? titles[current] : current) + "】");
+                            string[] bl = body.ToString().Split('\n');
+                            int shown = 0;
+                            foreach (string l in bl)
+                            {
+                                string t = l.Trim();
+                                if (t.Length == 0) continue;
+                                sb.AppendLine("  " + t);
+                                if (++shown >= 6) { sb.AppendLine("  …（完整内容见 system.md）"); break; }
+                            }
+                            sb.AppendLine();
+                        }
+                        body.Clear();
+                    };
+
+                    foreach (string raw in lines)
+                    {
+                        string t = raw.Trim();
+                        if (t.StartsWith("#")) continue;
+
+                        var m = System.Text.RegularExpressions.Regex.Match(t, @"^<(\w[\w-]*)>$");
+                        if (m.Success)
+                        {
+                            flush();
+                            current = m.Groups[1].Value;
+                            continue;
+                        }
+                        if (current != null && t == "</" + current + ">")
+                        {
+                            flush();
+                            current = null;
+                            continue;
+                        }
+                        if (current != null) body.AppendLine(raw);
+                    }
+                    flush();
+                }
+
+                if (File.Exists(RulesPath))
+                {
+                    sb.AppendLine("【红线（rules.md）】");
+                    foreach (string raw in File.ReadAllLines(RulesPath, Encoding.UTF8))
+                    {
+                        string t = raw.Trim();
+                        if (t.Length == 0 || t.StartsWith("#")) continue;
+                        sb.AppendLine("  " + t);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine("读取失败：" + ex.Message);
+            }
+
+            _viewOnly.Text = sb.ToString();
+        }
+
+        private void UpdateDiaryPreview()
+        {
+            try
+            {
+                string dir = _diaryDir.Text.Trim();
+                if (dir.Length == 0) { _diaryPreview.Text = ""; return; }
+
+                string today = DateTime.Now.ToString("yyyy-MM-dd");
+                string file = Path.Combine(dir, today + ".md");
+                string exists = File.Exists(file) ? "（今天已有记录）" : "（今天还没写）";
+                int count = 0;
+                if (Directory.Exists(dir))
+                {
+                    count = Directory.GetFiles(dir, "*.md").Length;
+                }
+                _diaryPreview.Text = "今天的文件：" + file + "\n"
+                                   + exists + "   历史上共有 " + count + " 天的日记";
+            }
+            catch { _diaryPreview.Text = ""; }
+        }
+
+        // ── 日记相关操作 ───────────────────────────────────
+        private void BrowseDiaryDir()
+        {
+            try
+            {
+                using (var dlg = new FolderBrowserDialog())
+                {
+                    dlg.Description = "选择日记文件夹";
+                    dlg.ShowNewFolderButton = true;
+                    string cur = _diaryDir.Text.Trim();
+                    if (cur.Length > 0 && Directory.Exists(cur)) dlg.SelectedPath = cur;
+                    if (dlg.ShowDialog(this) == DialogResult.OK)
+                    {
+                        _diaryDir.Text = dlg.SelectedPath;
+                        UpdateDiaryPreview();
+                        SetMsg("日记目录已选择，记得点「保存」", BlueColor);
+                    }
+                }
+            }
+            catch (Exception ex) { SetMsg("选择失败：" + ex.Message, RedColor); }
+        }
+
+        private void OpenDiaryDir()
+        {
+            try
+            {
+                string dir = _diaryDir.Text.Trim();
+                if (dir.Length == 0) { SetMsg("先设置日记目录", RedColor); return; }
+                if (!Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                    SetMsg("目录不存在，已创建：" + dir, BlueColor);
+                }
+                Process.Start("explorer.exe", "\"" + dir + "\"");
+            }
+            catch (Exception ex) { SetMsg("打开失败：" + ex.Message, RedColor); }
+        }
+
+        private void ShowTodayDiary()
+        {
+            try
+            {
+                string dir = _diaryDir.Text.Trim();
+                string file = Path.Combine(dir, DateTime.Now.ToString("yyyy-MM-dd") + ".md");
+                if (!File.Exists(file))
+                {
+                    MessageBox.Show("今天还没有日记。\n\n她和你说到心里话的时候才会写。",
+                        "今天的日记", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                string text = File.ReadAllText(file, Encoding.UTF8);
+                using (var dlg = new DiaryViewForm(file, text))
+                {
+                    dlg.ShowDialog(this);
+                }
+            }
+            catch (Exception ex) { SetMsg("读取失败：" + ex.Message, RedColor); }
+        }
+
+        // ── 保存 ──────────────────────────────────────────
+        private void SavePersona()
+        {
+            try
+            {
+                if (!File.Exists(PersonaPath))
+                {
+                    SetMsg("找不到人格文件", RedColor);
+                    return;
+                }
+
+                string dir = _diaryDir.Text.Trim();
+                if (dir.Length == 0)
+                {
+                    SetMsg("日记目录不能为空", RedColor);
+                    return;
+                }
+
+                SavePersonaYaml();
+                SaveDiaryConfig();
+                UpdateDiaryPreview();
+
+                SetMsg("已保存。需要重启机器人才能生效（关掉启动器 → 重新双击）。", GreenColor);
+            }
+            catch (Exception ex)
+            {
+                SetMsg("保存失败：" + ex.Message, RedColor);
+            }
+        }
+
+        private void SavePersonaYaml()
+        {
+            string[] lines = File.ReadAllLines(PersonaPath, Encoding.UTF8);
+            var outLines = new List<string>();
+            bool backgroundDone = false;
+            bool inFacts = false;
+            int factsIndent = -1;
+
+            foreach (string raw in lines)
+            {
+                string trimmed = raw.TrimStart();
+                string indent = raw.Substring(0, raw.Length - trimmed.Length);
+
+                // facts 块：key 行之后的所有 "- xxx" 都要替换
+                if (inFacts)
+                {
+                    if (trimmed.Length == 0) { outLines.Add(raw); continue; }
+                    int ind = raw.Length - trimmed.Length;
+                    if (trimmed.StartsWith("- ") && (factsIndent < 0 || ind == factsIndent))
+                    {
+                        if (factsIndent < 0) factsIndent = ind;
+                        continue;
+                    }
+                    WriteFacts(outLines, indent + "  ");
+                    inFacts = false;
+                }
+
+                if (!trimmed.StartsWith("#"))
+                {
+                    if (trimmed.StartsWith("facts:"))
+                    {
+                        outLines.Add(raw);
+                        inFacts = true;
+                        factsIndent = -1;
+                        continue;
+                    }
+                    if (trimmed.StartsWith("name:")) { outLines.Add(indent + "name: " + _name.Text.Trim()); continue; }
+                    if (trimmed.StartsWith("selfClaim:")) { outLines.Add(indent + "selfClaim: " + _selfClaim.Text.Trim()); continue; }
+                    if (trimmed.StartsWith("age:")) { outLines.Add(indent + "age: " + _age.Text.Trim()); continue; }
+                    if (trimmed.StartsWith("habitWords:"))
+                    {
+                        var words = _habitWords.Text.Split(new[] { '，', ',', '、' }, StringSplitOptions.RemoveEmptyEntries);
+                        var sb = new StringBuilder();
+                        foreach (string w in words)
+                        {
+                            if (sb.Length > 0) sb.Append(", ");
+                            sb.Append('"').Append(w.Trim()).Append('"');
+                        }
+                        outLines.Add(indent + "habitWords: [" + sb + "]");
+                        continue;
+                    }
+                    if (trimmed.StartsWith("background:"))
+                    {
+                        outLines.Add(indent + "background: >");
+                        foreach (string bl in _background.Text.Replace("\r\n", "\n").Split('\n'))
+                        {
+                            outLines.Add(indent + "  " + bl.Trim());
+                        }
+                        backgroundDone = true;
+                        continue;
+                    }
+                    if (backgroundDone && !trimmed.Contains(":") && trimmed.Length > 0) continue;
+                }
+                outLines.Add(raw);
+            }
+
+            if (inFacts) WriteFacts(outLines, "    ");
+
+            File.WriteAllLines(PersonaPath, outLines.ToArray(), new UTF8Encoding(false));
+        }
+
+        /// <summary>
+        /// 日记配置写到 config/local.yaml（用户级覆盖，不动 default.yaml）。
+        /// local.yaml 的优先级高于 default.yaml，且已在 .gitignore 里。
+        /// </summary>
+        private void SaveDiaryConfig()
+        {
+            string dir = _diaryDir.Text.Trim();
+
+            var sb = new StringBuilder();
+            sb.AppendLine("# 本文件含本机配置，不入 git（见 .gitignore）");
+            sb.AppendLine("# 由「大肥鱼」启动器的人格设定窗口写入");
+            sb.AppendLine();
+            sb.AppendLine("diary:");
+            sb.AppendLine("  enabled: " + (_diaryEnabled.Checked ? "true" : "false"));
+            // 路径里的反斜杠在 YAML 双引号里要转义
+            sb.AppendLine("  dir: \"" + dir.Replace("\\", "\\\\") + "\"");
+
+            File.WriteAllText(LocalConfigPath, sb.ToString(), new UTF8Encoding(false));
+        }
+
         private void WriteFacts(List<string> outLines, string itemIndent)
         {
             string[] rows = _facts.Text.Replace("\r\n", "\n").Split('\n');
@@ -2049,10 +2549,31 @@ namespace QQChatmateLauncher
             if (!any) outLines.Add(itemIndent + "- （空）");
         }
 
-        /// <summary>
-        /// 读 YAML 里的块状列表（key 下面若干行 "- 内容"）。
-        /// 用于 identity.facts。
-        /// </summary>
+        private static string ValueOf(string line, string key)
+        {
+            string v = line.Substring(key.Length).Trim();
+            int hash = v.IndexOf(" #");
+            if (hash > 0) v = v.Substring(0, hash).Trim();
+            return v;
+        }
+
+        private static string ParseYamlList(string v)
+        {
+            v = v.Trim();
+            if (v.StartsWith("[")) v = v.Substring(1);
+            if (v.EndsWith("]")) v = v.Substring(0, v.Length - 1);
+            var parts = v.Split(',');
+            var sb = new StringBuilder();
+            foreach (string p in parts)
+            {
+                string w = p.Trim().Trim('"', '\'').Trim();
+                if (w.Length == 0) continue;
+                if (sb.Length > 0) sb.Append('，');
+                sb.Append(w);
+            }
+            return sb.ToString();
+        }
+
         private static string ParseYamlBlockList(string[] lines, string key)
         {
             var sb = new StringBuilder();
@@ -2070,7 +2591,6 @@ namespace QQChatmateLauncher
                     continue;
                 }
 
-                // 空行：可能是列表里的空行，也可能是块结束
                 if (trimmed.Length == 0) continue;
 
                 int indent = raw.Length - trimmed.Length;
@@ -2086,135 +2606,9 @@ namespace QQChatmateLauncher
                     }
                 }
 
-                // 出现缩进更浅、且不是 "- " 的行 → 这块结束了
                 if (indent <= blockIndent || blockIndent < 0) break;
             }
             return sb.ToString();
-        }
-
-        /// <summary>["呃", "哼"] → 呃，哼</summary>
-        private static string ParseYamlList(string v)
-        {
-            v = v.Trim();
-            if (v.StartsWith("[")) v = v.Substring(1);
-            if (v.EndsWith("]")) v = v.Substring(0, v.Length - 1);
-            var parts = v.Split(',');
-            var sb = new StringBuilder();
-            foreach (string p in parts)
-            {
-                string s = p.Trim().Trim('"', '\'');
-                if (s.Length == 0) continue;
-                if (sb.Length > 0) sb.Append('，');
-                sb.Append(s);
-            }
-            return sb.ToString();
-        }
-
-        /// <summary>改写 YAML 里的指定 key，保留其它内容和注释</summary>
-        private void SavePersona()
-        {
-            try
-            {
-                if (!File.Exists(PersonaPath))
-                {
-                    SetMsg("找不到人格文件", RedColor);
-                    return;
-                }
-
-                string[] lines = File.ReadAllLines(PersonaPath, Encoding.UTF8);
-                var outLines = new List<string>();
-                bool backgroundDone = false;
-                bool factsDone = false;
-                bool inFacts = false;
-                int factsIndent = -1;
-
-                foreach (string raw in lines)
-                {
-                    string trimmed = raw.TrimStart();
-                    string indent = raw.Substring(0, raw.Length - trimmed.Length);
-
-                    // facts 块：key 行之后的所有 "- xxx" 都要替换
-                    if (inFacts)
-                    {
-                        if (trimmed.Length == 0) { outLines.Add(raw); continue; }
-                        int ind = raw.Length - trimmed.Length;
-                        if (trimmed.StartsWith("- ") && (factsIndent < 0 || ind == factsIndent))
-                        {
-                            if (factsIndent < 0) factsIndent = ind;
-                            continue;   // 丢掉旧的列表项，稍后统一写入
-                        }
-                        // 块结束 → 补上新的列表项再继续正常处理
-                        WriteFacts(outLines, indent + "  ");
-                        inFacts = false;
-                        factsDone = true;
-                    }
-
-                    if (!trimmed.StartsWith("#"))
-                    {
-                        if (trimmed.StartsWith("facts:"))
-                        {
-                            outLines.Add(raw);
-                            inFacts = true;
-                            factsIndent = -1;
-                            continue;
-                        }
-                        if (trimmed.StartsWith("name:"))
-                        {
-                            outLines.Add(indent + "name: " + _name.Text.Trim());
-                            continue;
-                        }
-                        if (trimmed.StartsWith("selfClaim:"))
-                        {
-                            outLines.Add(indent + "selfClaim: " + _selfClaim.Text.Trim());
-                            continue;
-                        }
-                        if (trimmed.StartsWith("age:"))
-                        {
-                            outLines.Add(indent + "age: " + _age.Text.Trim());
-                            continue;
-                        }
-                        if (trimmed.StartsWith("habitWords:"))
-                        {
-                            var words = _habitWords.Text.Split(new[] { '，', ',', '、' }, StringSplitOptions.RemoveEmptyEntries);
-                            var sb = new StringBuilder();
-                            foreach (string w in words)
-                            {
-                                if (sb.Length > 0) sb.Append(", ");
-                                sb.Append('"').Append(w.Trim()).Append('"');
-                            }
-                            outLines.Add(indent + "habitWords: [" + sb + "]");
-                            continue;
-                        }
-                        if (trimmed.StartsWith("background:"))
-                        {
-                            // 多行文本用 YAML 的 > 折叠块
-                            outLines.Add(indent + "background: >");
-                            foreach (string bl in _background.Text.Replace("\r\n", "\n").Split('\n'))
-                            {
-                                outLines.Add(indent + "  " + bl.Trim());
-                            }
-                            backgroundDone = true;
-                            continue;
-                        }
-                        // 跳过原 background 的续行（以更多缩进开头的非 key 行）
-                        if (backgroundDone && !trimmed.Contains(":") && trimmed.Length > 0)
-                        {
-                            continue;
-                        }
-                    }
-                    outLines.Add(raw);
-                }
-
-                // facts 是文件最后一个块时，收尾
-                if (inFacts) { WriteFacts(outLines, "    "); factsDone = true; }
-                if (!factsDone) { /* 文件里没有 facts 键，不新增，保持原样 */ }
-
-                File.WriteAllLines(PersonaPath, outLines.ToArray(), new UTF8Encoding(false));                SetMsg("已保存。需要重启机器人才能生效（点主界面的「全部停止」再「一键全部启动」）。", GreenColor);
-            }
-            catch (Exception ex)
-            {
-                SetMsg("保存失败：" + ex.Message, RedColor);
-            }
         }
 
         private void OpenFile(string path)
@@ -2236,6 +2630,56 @@ namespace QQChatmateLauncher
             if (_status == null) return;
             _status.Text = msg;
             _status.ForeColor = color;
+        }
+    }
+
+    /// <summary>只读看今天的日记（带滚动，比弹 MessageBox 强）</summary>
+    public class DiaryViewForm : Form
+    {
+        private static readonly Color BgColor = Color.FromArgb(15, 23, 42);
+        private static readonly Color TextColor = Color.FromArgb(226, 232, 240);
+        private static readonly Color MutedColor = Color.FromArgb(148, 163, 184);
+
+        public DiaryViewForm(string file, string text)
+        {
+            Text = "今天的日记 · " + Path.GetFileNameWithoutExtension(file);
+            Size = new Size(680, 640);
+            StartPosition = FormStartPosition.CenterParent;
+            BackColor = BgColor;
+            ForeColor = TextColor;
+            Font = new Font("Microsoft YaHei UI", 9.5f);
+
+            var box = new TextBox
+            {
+                Location = new Point(12, 12),
+                Size = new Size(644, 550),
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical,
+                BackColor = Color.FromArgb(22, 30, 46),
+                ForeColor = TextColor,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Microsoft YaHei UI", 10f),
+                Text = text,
+                WordWrap = true
+            };
+            Controls.Add(box);
+
+            var btn = new Button
+            {
+                Text = "打开文件位置",
+                Location = new Point(12, 570),
+                Size = new Size(140, 32),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(30, 41, 59),
+                ForeColor = MutedColor
+            };
+            btn.FlatAppearance.BorderSize = 0;
+            btn.Click += (s, e) =>
+            {
+                try { Process.Start("explorer.exe", "/select,\"" + file + "\""); } catch { }
+            };
+            Controls.Add(btn);
         }
     }
 }

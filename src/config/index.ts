@@ -156,6 +156,21 @@ const ConfigSchema = z.object({
       .default({}),
   }),
 
+  // 日记：把阿龙吐露心声的内容以第二人称记下来，一天一个文件
+  diary: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** 日记文件夹（绝对路径）。exe 里可改，改完写进 config/local.yaml */
+      dir: z.string().default('D:\\日记'),
+      /** 少于这么多字不记，避免寒暄进日记 */
+      minChars: z.number().default(6),
+      /** 值不值得记，判定用的温度（低=稳定） */
+      judgeTemperature: z.number().default(0.1),
+      /** 单条日记最多多少字 */
+      maxEntryChars: z.number().default(180),
+    })
+    .default({}),
+
   responder: z.object({
     typing: z
       .object({

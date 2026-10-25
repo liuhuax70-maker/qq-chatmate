@@ -19,6 +19,7 @@ import { Store } from './store/db';
 import { startHttpServer } from './server/http';
 import { ControlPanel } from './server/panel';
 import { ProactiveScheduler } from './proactive';
+import { Diary } from './diary';
 
 dotenv.config();
 
@@ -188,6 +189,14 @@ async function main(): Promise<void> {
 
   const tts = new TtsClient(cfg.responder.voice as VoiceConfig, logger);
 
+  // ── 日记 ────────────────────────────────────────────────
+  // 她以第二人称记下阿龙吐露心声的那些事，一天一个文件。
+  // 全程异步，写失败也绝不影响对话。
+  const diary = new Diary(cfg.diary, llm, logger);
+  if (cfg.diary.enabled) {
+    logger.info({ dir: cfg.diary.dir }, '日记已启用');
+  }
+
   // ── 管线 ────────────────────────────────────────────────
   const pipeline = new MessagePipeline(
     {
@@ -351,6 +360,16 @@ async function main(): Promise<void> {
     try {
       session.recordUser(text);
       memory.captureExplicit(peerId, text);
+
+      // 日记：判断这条是不是他的心里话，值不值得记。
+      // 必须在 recordUser 之后——要连上"刚才的对话"当上下文。
+      // void 调用：写日记不参与回复流程，慢一点、失败都无所谓。
+      if (cfg.diary.enabled) {
+        void diary.maybeWrite(
+          text,
+          session.shortTerm.slice(-10).map((t) => ({ role: t.role, content: t.content })),
+        );
+      }
 
       const messages = promptBuilder.build(session, text);
       let result = await llm.generate(messages);
@@ -857,6 +876,12 @@ async function main(): Promise<void> {
         list: () => stickers.list().map((s) => ({ url: s.url, usedCount: s.usedCount, tags: s.tags })),
         keepOnly: (urls) => stickers.keepOnly(urls),
         refresh: () => stickers.refresh(adapter),
+      },
+      diary: {
+        enabled: cfg.diary.enabled,
+        dir: cfg.diary.dir,
+        readToday: () => diary.readToday(),
+        list: () => diary.list(),
       },
       panel,
     },
