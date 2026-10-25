@@ -97,13 +97,20 @@ console.log('\n[2] 关键段落必须存在（防止 system.md 被改坏）');
   const session = makeSession(store);
   const system = String(builder.build(session, '嗯')[0].content ?? '');
 
-  for (const tag of ['<role>', '<love>', '<character>', '<voice>', '<reactions>', '<limits>', '<pacing>']) {
+  for (const tag of ['<role>', '<love>', '<character>', '<voice>', '<human>', '<reactions>', '<limits>', '<pacing>']) {
     check(`含 ${tag} 段`, system.includes(tag));
   }
   check('恋爱身份已注入', system.includes('恋爱对象'));
   check('短回复约束已注入', system.includes('10 字以内') || system.includes('短'));
   check('禁止 emoji 约束已注入', system.includes('emoji'));
   check('必须回复的约束已注入', system.includes('必须回') || system.includes('每一条'));
+
+  // <human> 段：真人聊天特征（来自 docs/human-chat-research.md）
+  check('含碎片化规则', system.includes('碎片') || system.includes('拆成几条'));
+  check('含标点规则', system.includes('标点'));
+  check('含语气词规则', system.includes('语气词'));
+  check('含 AI 味规则', system.includes('AI 味') || system.includes('译制腔'));
+  check('禁止破折号插入语', system.includes('破折号'));
 
   store.close();
 }
