@@ -37,7 +37,8 @@ $common = @(
     '/reference:System.dll',
     '/reference:System.Windows.Forms.dll',
     '/reference:System.Drawing.dll',
-    "/win32manifest:$manifest"
+    "/win32manifest:$manifest",
+    "/win32icon:$(Join-Path $here '大肥鱼.ico')"
 )
 
 # 输出到临时目录再改名：中文文件名直接给 /out: 会被 GBK 转换搞乱

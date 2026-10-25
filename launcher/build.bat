@@ -38,7 +38,7 @@ if not exist "%MANIFEST%" (
   exit /b 1
 )
 
-set "COMMON=/nologo /reference:System.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /win32manifest:"%MANIFEST%""
+set "COMMON=/nologo /reference:System.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /win32manifest:"%MANIFEST%" /win32icon:"%HERE%¥Û∑ ”„.ico""
 
 echo [1/2] Building GUI version...
 "%CSC%" /target:winexe /out:"%HERE%¥Û∑ ”„.exe" %COMMON% "%SRC%"
