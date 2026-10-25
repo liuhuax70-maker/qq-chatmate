@@ -20,7 +20,7 @@ namespace QQChatmateLauncher
     static class Program
     {
         // ── 全局路径 ──────────────────────────────────────────
-        static string BaseDir;
+        public static string BaseDir;
         static string BotDir;
         static string TtsPython;
         static string TtsScript;
@@ -765,9 +765,8 @@ namespace QQChatmateLauncher
         private int _signDownStreak = 0;
         private bool _restarting = false;      // 防止上一轮拉起还没完成就再拉
         private int _tickCount = 0;
-        private PictureBox _qrBox;
-        private Label _qrHint;
-        private string _lastQrPath;
+        /// <summary>独立的扫码窗口（登录成功后自动关闭）</summary>
+        private QrForm _qrForm;
         private readonly bool _startMinimized;
 
         private static readonly Color BgColor = Color.FromArgb(15, 23, 42);
@@ -908,46 +907,6 @@ namespace QQChatmateLauncher
                 Size = new Size(510, 20)
             };
             Controls.Add(_statusBar);
-
-            // ── 二维码显示区 ───────────────────────────────
-            // Lagrange 登录前会把二维码写到 qr-*.png，这里直接读出来显示，
-            // 你就不用去管那个弹出的控制台窗口了。
-            var qrPanel = new Panel
-            {
-                Location = new Point(20, y + 118),
-                Size = new Size(504, 290),
-                BackColor = CardColor
-            };
-            Controls.Add(qrPanel);
-
-            var qrTitle = new Label
-            {
-                Text = "登录二维码（协议端启动后自动出现）",
-                ForeColor = MutedColor,
-                Location = new Point(12, 8),
-                Size = new Size(470, 20)
-            };
-            qrPanel.Controls.Add(qrTitle);
-
-            _qrBox = new PictureBox
-            {
-                Location = new Point(140, 32),
-                Size = new Size(220, 220),
-                SizeMode = PictureBoxSizeMode.Zoom,
-                BackColor = Color.FromArgb(51, 65, 85),
-                BorderStyle = BorderStyle.None
-            };
-            qrPanel.Controls.Add(_qrBox);
-
-            _qrHint = new Label
-            {
-                Text = "等待二维码…",
-                ForeColor = MutedColor,
-                TextAlign = ContentAlignment.MiddleCenter,
-                Location = new Point(12, 258),
-                Size = new Size(470, 20)
-            };
-            qrPanel.Controls.Add(_qrHint);
 
             _timer = new System.Windows.Forms.Timer { Interval = 3000 };
             _timer.Tick += (s, e) =>
@@ -1285,50 +1244,202 @@ namespace QQChatmateLauncher
         /// 刷新二维码显示。协议端未登录时会不断写 qr-*.png，
         /// 这里读最新的那张显示出来；登录成功后二维码消失，显示"已登录"。
         /// </summary>
+        /// <summary>
+        /// 二维码窗口管理。
+        ///
+        /// 需求：二维码单独开一个窗口，扫码登录成功后自动关闭。
+        /// 这里只负责「该不该开窗 / 该不该关窗」，具体显示交给 QrForm。
+        /// </summary>
         private void UpdateQr()
         {
             try
             {
-                string qr = Program.FindQrCode();
-
-                if (qr == null)
+                // 已登录 → 不需要二维码窗口
+                if (Program.IsProtocolConnected())
                 {
-                    // 没二维码：可能是已登录，也可能协议端没启动
-                    if (Program.IsProtocolConnected())
+                    if (_qrForm != null && !_qrForm.IsDisposed)
                     {
-                        _qrHint.Text = "✅ 已登录，机器人已连上";
-                        _qrHint.ForeColor = GreenColor;
+                        try { _qrForm.Close(); } catch { }
+                        _qrForm = null;
                     }
-                    else if (Program.TestLagrange())
-                    {
-                        // NapCat 在跑但还没连上：可能是登录中，也可能是登录失败了
-                        _qrHint.Text = "等待二维码…（NapCat 启动中）";
-                        _qrHint.ForeColor = MutedColor;
-                    }
-                    else
-                    {
-                        _qrHint.Text = "等待二维码…（先启动 NapCat）";
-                        _qrHint.ForeColor = MutedColor;
-                    }
-                    _qrBox.Image = null;
-                    _lastQrPath = null;
                     return;
                 }
 
-                // 路径没变就不重复加载，避免闪烁
-                if (qr == _lastQrPath && _qrBox.Image != null) return;
-
-                // 释放旧图，避免句柄泄漏
-                if (_qrBox.Image != null)
+                // 有可用二维码 → 没窗口就开一个
+                string qr = Program.FindQrCode();
+                if (qr != null)
                 {
-                    var old = _qrBox.Image;
-                    _qrBox.Image = null;
-                    old.Dispose();
+                    if (_qrForm == null || _qrForm.IsDisposed)
+                    {
+                        _qrForm = new QrForm();
+                        _qrForm.FormClosed += (s, e) => { _qrForm = null; };
+                        _qrForm.Show();     // 非模态，主窗口还能操作
+                    }
                 }
+            }
+            catch { }
+        }
+    }
 
-                // 用 FileStream 读，避免 Image.FromFile 锁文件导致协议端写不进去
+    /// <summary>
+    /// 独立的扫码窗口。
+    ///
+    /// 为什么要单独开窗口：
+    ///   二维码塞在主界面里太小、位置固定，手机不好扫。
+    ///   独立窗口可以做得更大、置顶、可拖动，扫完自动关掉。
+    ///
+    /// 生命周期：
+    ///   协议端启动 → 检测到二维码文件 → 自动弹出本窗口
+    ///   登录成功（healthz = connected）→ 自动关闭并释放
+    /// </summary>
+    public class QrForm : Form
+    {
+        private PictureBox _box;
+        private Label _hint;
+        private Button _refresh;
+        private System.Windows.Forms.Timer _timer;
+        private string _lastPath;
+        private DateTime _openedAt = DateTime.Now;
+
+        private static readonly Color BgColor = Color.FromArgb(15, 23, 42);
+        private static readonly Color CardColor = Color.FromArgb(30, 41, 59);
+        private static readonly Color MutedColor = Color.FromArgb(148, 163, 184);
+        private static readonly Color BlueColor = Color.FromArgb(96, 165, 250);
+        private static readonly Color GreenColor = Color.FromArgb(52, 211, 153);
+        private static readonly Color RedColor = Color.FromArgb(248, 113, 113);
+
+        public QrForm()
+        {
+            Text = "扫码登录 QQ";
+            Size = new Size(420, 560);
+            StartPosition = FormStartPosition.CenterScreen;
+            BackColor = BgColor;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = true;
+            TopMost = true;              // 置顶，免得被别的窗口挡住
+
+            var title = new Label
+            {
+                Text = "用手机 QQ 扫码登录",
+                ForeColor = Color.White,
+                Font = new Font("Microsoft YaHei UI", 13f, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Location = new Point(20, 16),
+                Size = new Size(360, 30)
+            };
+            Controls.Add(title);
+
+            _box = new PictureBox
+            {
+                Location = new Point(60, 56),
+                Size = new Size(280, 280),
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BackColor = CardColor,
+                BorderStyle = BorderStyle.None
+            };
+            Controls.Add(_box);
+
+            _hint = new Label
+            {
+                Text = "等待二维码…",
+                ForeColor = MutedColor,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Location = new Point(20, 348),
+                Size = new Size(360, 40)
+            };
+            Controls.Add(_hint);
+
+            _refresh = new Button
+            {
+                Text = "刷新二维码",
+                Location = new Point(60, 400),
+                Size = new Size(130, 36),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = CardColor,
+                ForeColor = BlueColor
+            };
+            _refresh.FlatAppearance.BorderSize = 0;
+            _refresh.Click += (s, e) => RefreshQr();
+            Controls.Add(_refresh);
+
+            var closeBtn = new Button
+            {
+                Text = "关闭",
+                Location = new Point(210, 400),
+                Size = new Size(130, 36),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = CardColor,
+                ForeColor = MutedColor
+            };
+            closeBtn.FlatAppearance.BorderSize = 0;
+            closeBtn.Click += (s, e) => Close();
+            Controls.Add(closeBtn);
+
+            var tip = new Label
+            {
+                Text = "登录成功后本窗口会自动关闭",
+                ForeColor = MutedColor,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Location = new Point(20, 448),
+                Size = new Size(360, 20)
+            };
+            Controls.Add(tip);
+
+            _timer = new System.Windows.Forms.Timer { Interval = 1500 };
+            _timer.Tick += (s, e) => Poll();
+            _timer.Start();
+
+            Shown += (s, e) => Poll();
+            FormClosed += (s, e) => { try { _timer.Stop(); _timer.Dispose(); } catch { } };
+        }
+
+        /// <summary>每 1.5 秒检查一次：登录成功就关窗，有新码就刷新显示。</summary>
+        private void Poll()
+        {
+            // 已登录 → 自动关闭（需求：登录成功后删除窗口）
+            if (Program.IsProtocolConnected())
+            {
+                _hint.Text = "✅ 已登录，窗口即将关闭";
+                _hint.ForeColor = GreenColor;
+                try { _timer.Stop(); } catch { }
+                // 留 800ms 让你看到提示，然后关闭
+                var t = new System.Windows.Forms.Timer { Interval = 800 };
+                t.Tick += (s, e) =>
+                {
+                    t.Stop();
+                    t.Dispose();
+                    Close();
+                };
+                t.Start();
+                return;
+            }
+
+            string qr = Program.FindQrCode();
+            if (qr == null)
+            {
+                if (_box.Image != null)
+                {
+                    var old = _box.Image;
+                    _box.Image = null;
+                    try { old.Dispose(); } catch { }
+                }
+                _lastPath = null;
+                _hint.Text = "等待二维码…（协议端启动后自动出现）";
+                _hint.ForeColor = MutedColor;
+                return;
+            }
+
+            if (qr == _lastPath && _box.Image != null) return;
+            LoadQr(qr);
+        }
+
+        private void LoadQr(string path)
+        {
+            try
+            {
                 Image raw;
-                using (var fs = new FileStream(qr, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                 using (var ms = new MemoryStream())
                 {
                     fs.CopyTo(ms);
@@ -1336,9 +1447,8 @@ namespace QQChatmateLauncher
                     raw = Image.FromStream(ms);
                 }
 
-                // 关键：Lagrange 输出的 qr-*.png 只有 147x147，尺寸太小手机难扫。
-                // 它是纯黑白二值图，用最近邻放大 6 倍（不插值、不模糊）就清晰可扫。
-                int scale = Math.Max(1, 600 / Math.Max(raw.Width, raw.Height));
+                // 最近邻放大，保持二维码锐利（双线性会糊掉）
+                int scale = Math.Max(1, 280 / Math.Max(raw.Width, raw.Height));
                 var big = new Bitmap(raw.Width * scale, raw.Height * scale);
                 using (var g = Graphics.FromImage(big))
                 {
@@ -1347,16 +1457,102 @@ namespace QQChatmateLauncher
                     g.DrawImage(raw, 0, 0, big.Width, big.Height);
                 }
                 raw.Dispose();
-                _qrBox.Image = big;
 
-                _lastQrPath = qr;
-                _qrHint.Text = "用手机 QQ 扫码登录（码 5 分钟内有效）";
-                _qrHint.ForeColor = BlueColor;            }
+                if (_box.Image != null)
+                {
+                    var old = _box.Image;
+                    _box.Image = null;
+                    try { old.Dispose(); } catch { }
+                }
+                _box.Image = big;
+                _lastPath = path;
+
+                var age = DateTime.Now - File.GetLastWriteTime(path);
+                _hint.Text = "手机 QQ 扫码登录（码 5 分钟内有效）";
+                _hint.ForeColor = BlueColor;
+                _refresh.Text = "刷新二维码";
+            }
             catch
             {
-                _qrHint.Text = "二维码读取失败，稍后重试";
-                _qrHint.ForeColor = RedColor;
+                _hint.Text = "二维码读取失败，点「刷新二维码」重试";
+                _hint.ForeColor = RedColor;
             }
+        }
+
+        /// <summary>
+        /// 刷新二维码：让协议端重新生成一个。
+        ///
+        /// NapCat 的二维码存在 cache\qrcode.png，重启协议端才会重新生成。
+        /// 所以这里做的是「重启 NapCat」——但那样要重新扫码整个流程。
+        /// 更轻量的做法：删掉旧文件，让 NapCat 自己发现需要新码时再写。
+        /// 如果协议端已经拿到有效会话，删文件也不影响。
+        /// </summary>
+        private void RefreshQr()
+        {
+            _refresh.Enabled = false;
+            _refresh.Text = "刷新中…";
+            _hint.Text = "正在刷新二维码…";
+            _hint.ForeColor = BlueColor;
+
+            var t = new Thread(() =>
+            {
+                try
+                {
+                    // 1) 删掉旧二维码文件，强制协议端重新生成
+                    string qrPath = Path.Combine(Program.BaseDir, @"napcat\napcat\cache\qrcode.png");
+                    try { if (File.Exists(qrPath)) File.Delete(qrPath); } catch { }
+
+                    // 2) 重启 NapCat（它会重新走登录流程并生成新码）
+                    Program.StopLagrange();
+                    Thread.Sleep(1200);
+                    Program.StartLagrange();
+
+                    // 3) 等新码出现（最多 60 秒）
+                    bool got = false;
+                    for (int i = 0; i < 120; i++)
+                    {
+                        Thread.Sleep(500);
+                        if (Program.IsProtocolConnected()) { got = true; break; }
+                        if (Program.FindQrCode() != null) { got = true; break; }
+                    }
+
+                    try
+                    {
+                        BeginInvoke((Action)(() =>
+                        {
+                            _refresh.Enabled = true;
+                            _refresh.Text = "刷新二维码";
+                            if (!got)
+                            {
+                                _hint.Text = "刷新超时，请检查协议端是否正常运行";
+                                _hint.ForeColor = RedColor;
+                            }
+                            else
+                            {
+                                _lastPath = null;   // 强制重新加载
+                                Poll();
+                            }
+                        }));
+                    }
+                    catch { }
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        BeginInvoke((Action)(() =>
+                        {
+                            _refresh.Enabled = true;
+                            _refresh.Text = "刷新二维码";
+                            _hint.Text = "刷新失败：" + ex.Message;
+                            _hint.ForeColor = RedColor;
+                        }));
+                    }
+                    catch { }
+                }
+            });
+            t.IsBackground = true;
+            t.Start();
         }
     }
 }
