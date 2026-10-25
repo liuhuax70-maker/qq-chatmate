@@ -231,6 +231,18 @@ async function main(): Promise<void> {
         processed = post.process(result.text);
       }
 
+      // 内容安全闸：命中禁用话题就不发，改成一句安全的中性反应。
+      // 配置里写了 forbiddenTopics 就必须真的生效，否则是假的保护。
+      if (processed.text) {
+        const topics = (cfg.proactive as any)?.safety?.forbiddenTopics as string[] | undefined;
+        const hit = topics?.find((t) => t && processed.text.includes(t));
+        if (hit) {
+          logger.warn({ topic: hit }, '回复命中禁用话题，替换为中性反应');
+          const safe = ['嗯', '这个不聊', '换个话题', '说点别的'];
+          processed = { ...processed, text: safe[Math.floor(Math.random() * safe.length)] };
+        }
+      }
+
       if (!processed.text) {
         // 兜底：绝不能因为模型返回空就"消失"。至少回一个短反应，保证用户一定有回应。
         logger.warn('回复为空，走兜底');

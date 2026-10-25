@@ -93,6 +93,8 @@ export class Store {
 
       CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope, scope_id);
       CREATE INDEX IF NOT EXISTS idx_logs_session ON chat_logs(session_id, created_at);
+      -- pruneChatLogs 按 created_at 单列删除，复合索引 (session_id, created_at) 用不上
+      CREATE INDEX IF NOT EXISTS idx_logs_created ON chat_logs(created_at);
 
       CREATE TABLE IF NOT EXISTS kv_store (
         key TEXT PRIMARY KEY,

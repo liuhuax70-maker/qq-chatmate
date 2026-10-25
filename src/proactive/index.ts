@@ -816,6 +816,13 @@ export class ProactiveScheduler {
         this.logger.warn({ len: text.length }, '主动开口超长，放弃');
         return null;
       }
+      // 内容安全闸：配置里写了 forbiddenTopics 就必须真的生效。
+      // 主动开口是她"没人看着"时说的话，风险比被动回复更高，所以在这里拦。
+      const hit = this.cfg.safety.forbiddenTopics.find((t) => t && text.includes(t));
+      if (hit) {
+        this.logger.warn({ topic: hit }, '主动开口命中禁用话题，放弃');
+        return null;
+      }
       return text;
     } catch (err) {
       this.logger.warn({ err: (err as Error).message }, '主动开口生成失败');

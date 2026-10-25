@@ -15,6 +15,7 @@
     "test:split": "tsx tests/split.ts",
     "test:stickers": "tsx tests/stickers.ts",
     "test:stickerkey": "tsx tests/sticker-key.ts",
+    "test:prompt": "tsx tests/prompt.ts",
     "cost": "tsx tests/cost.ts",
     "check:llm": "tsx tests/check-llm.ts"
   },
