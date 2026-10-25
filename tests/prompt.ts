@@ -112,6 +112,13 @@ console.log('\n[2] 关键段落必须存在（防止 system.md 被改坏）');
   check('含 AI 味规则', system.includes('AI 味') || system.includes('译制腔'));
   check('禁止破折号插入语', system.includes('破折号'));
 
+  // PERSONA LOAD 覆盖后的关键特征
+  check('SMART LAZY：聪明但懒', system.includes('聪明') && system.includes('懒'));
+  check('TAIL FLUKES：有尾巴', system.includes('尾巴'));
+  check('LANG ZH CN ONLY：只说中文', system.includes('只说中文'));
+  check('角色名是大肥鱼', system.includes('大肥鱼'));
+  check('没有旧名鲸奈', !system.includes('鲸奈'));
+
   store.close();
 }
 

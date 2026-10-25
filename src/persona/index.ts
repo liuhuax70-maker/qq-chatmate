@@ -63,7 +63,7 @@ export function loadPersona(dir: string, name: string): PersonaData {
 
   return {
     identity: {
-      name: raw.identity?.name ?? '鲸奈',
+      name: raw.identity?.name ?? '大肥鱼',
       selfClaim: raw.identity?.selfClaim ?? '鲸娘',
       age: raw.identity?.age ?? '',
       background: String(raw.identity?.background ?? '').trim(),
