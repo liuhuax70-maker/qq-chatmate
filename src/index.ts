@@ -137,9 +137,30 @@ async function main(): Promise<void> {
       explicitKeywords: cfg.memory.longTerm.explicitKeywords,
       summaryEnabled: cfg.memory.summary.enabled,
       summaryMaxChars: cfg.memory.summary.maxSummaryChars,
+      ttlDays: (cfg.memory.longTerm as any).ttlDays,
+      maxMemories: (cfg.memory.longTerm as any).maxMemories,
     },
     logger,
   );
+
+  // 记忆维护：启动时清一次过期/超限记忆，之后每 24 小时一次。
+  // 不清理的话检索噪音会越来越大，该被想起的事会被埋掉。
+  const runMemoryMaintenance = () => {
+    try {
+      const ttl = (cfg.memory.longTerm as any).ttlDays as number | undefined;
+      if (ttl) {
+        const n = store.pruneMemoriesOlderThan(ttl);
+        if (n > 0) logger.info({ rows: n, ttlDays: ttl }, '已清理过期记忆');
+      }
+      const r = memory.prune(peerId);
+      if (r.overflow > 0) logger.info({ rows: r.overflow }, '已淘汰低权重记忆');
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, '记忆维护失败（不影响运行）');
+    }
+  };
+  runMemoryMaintenance();
+  const memTimer = setInterval(runMemoryMaintenance, 24 * 3_600_000);
+  memTimer.unref();
 
   // ── Prompt ──────────────────────────────────────────────
   const promptBuilder = new PromptBuilder({

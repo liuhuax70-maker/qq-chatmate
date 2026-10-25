@@ -166,6 +166,8 @@ memory:
     topK: 5                    # 私聊比群聊检索更多，上下文更聚焦
     importanceThreshold: 0.25  # 私聊里随口说的话也值得记，阈值放宽
     ttlDays: 365               # 长期陪伴，记忆保留一年
+    maxMemories: 300             # 单用户最多留多少条；超出按「重要度低+久未访问」淘汰
+                                 # importance >= 0.9 的核心事实永不淘汰
     extractEveryNTurns: 8      # 更频繁地抽取
     explicitKeywords:
       - 记住

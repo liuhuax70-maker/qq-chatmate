@@ -204,9 +204,23 @@ export class Store {
       .run(m.scope, m.scopeId, m.type, m.content, m.importance, Date.now(), Date.now());
   }
 
+
+  /** 删除单条记忆（记忆淘汰用） */
+  deleteMemory(id: number): void {
+    this.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
+  }
+
+  /** 按时间清理过期记忆，返回删除条数。高权重(>=0.9)的核心事实永远保留。 */
+  pruneMemoriesOlderThan(days: number): number {
+    if (!days || days <= 0) return 0;
+    const cutoff = Date.now() - days * 86_400_000;
+    const info = this.db
+      .prepare('DELETE FROM memories WHERE created_at < ? AND importance < 0.9')
+      .run(cutoff);
+    return info.changes;
+  }
   /**
    * 检索记忆。v1 用关键词 + 重要度打分，不依赖向量服务。
-   * 向量检索可作为后续增强（config.memory.vector）。
    */
   searchMemories(scopeId: string, query: string, topK: number): MemoryRecord[] {
     const rows = this.db

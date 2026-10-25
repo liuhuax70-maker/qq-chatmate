@@ -865,6 +865,31 @@ namespace QQChatmateLauncher
             };
             Controls.Add(btnPanel);
 
+            // 人格编辑器：在 exe 里直接改人设，不用去翻文件夹
+            var btnPersona = new Button
+            {
+                Text = "编辑人格设定",
+                Location = new Point(284, y + 56),
+                Size = new Size(240, 32),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = CardColor,
+                ForeColor = BlueColor
+            };
+            btnPersona.FlatAppearance.BorderSize = 0;
+            btnPersona.Click += (s, e) =>
+            {
+                try
+                {
+                    using (var dlg = new PersonaForm(Program.BaseDir))
+                    {
+                        dlg.ShowDialog(this);
+                        SetStatus("人格编辑已关闭");
+                    }
+                }
+                catch (Exception ex) { SetStatus("打开人格编辑器失败：" + ex.Message); }
+            };
+            Controls.Add(btnPersona);
+
             // 自动拉起开关：默认勾选。不想让它自动重启时可以取消。
             var chkAuto = new CheckBox
             {
@@ -1553,6 +1578,352 @@ namespace QQChatmateLauncher
             });
             t.IsBackground = true;
             t.Start();
+        }
+    }
+
+    /// <summary>
+    /// 人格编辑器。
+    ///
+    /// 需求：在 exe 里载入人格设置，并给予修改权限。
+    /// 之前改人设要去翻 config/personas/default.yaml 和 config/prompts/system.md，
+    /// 对不熟文件结构的人很不友好。这个窗口把关键字段做成表单。
+    ///
+    /// 设计取舍：
+    ///   - 常用字段做成输入框（名字、自称、年龄、口头禅、米饭执念等）
+    ///   - 长文本（背景、性格）用多行文本框
+    ///   - 保留「打开原始文件」按钮，给需要精修的人用
+    ///   - 保存后提示需要重启机器人才能生效（配置是启动时加载的）
+    /// </summary>
+    public class PersonaForm : Form
+    {
+        private string _baseDir;
+        private TextBox _name;
+        private TextBox _selfClaim;
+        private TextBox _age;
+        private TextBox _background;
+        private TextBox _habitWords;
+        private TextBox _tone;
+        private Label _status;
+
+        private static readonly Color BgColor = Color.FromArgb(15, 23, 42);
+        private static readonly Color CardColor = Color.FromArgb(30, 41, 59);
+        private static readonly Color TextColor = Color.FromArgb(226, 232, 240);
+        private static readonly Color MutedColor = Color.FromArgb(148, 163, 184);
+        private static readonly Color BlueColor = Color.FromArgb(96, 165, 250);
+        private static readonly Color GreenColor = Color.FromArgb(52, 211, 153);
+        private static readonly Color RedColor = Color.FromArgb(248, 113, 113);
+
+        private string PersonaPath
+        {
+            get { return Path.Combine(_baseDir, @"qq-netizen\config\personas\default.yaml"); }
+        }
+
+        private string PromptPath
+        {
+            get { return Path.Combine(_baseDir, @"qq-netizen\config\prompts\system.md"); }
+        }
+
+        public PersonaForm(string baseDir)
+        {
+            _baseDir = baseDir;
+
+            Text = "人格设定";
+            Size = new Size(640, 720);
+            StartPosition = FormStartPosition.CenterParent;
+            BackColor = BgColor;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+
+            int y = 16;
+
+            AddLabel("名字", 20, y);
+            _name = AddText(100, y, 480);
+            y += 38;
+
+            AddLabel("自称", 20, y);
+            _selfClaim = AddText(100, y, 200);
+            AddLabel("年龄", 320, y);
+            _age = AddText(380, y, 200);
+            y += 38;
+
+            AddLabel("口头禅", 20, y);
+            _habitWords = AddText(100, y, 480);
+            AddTooltip("用中文逗号分隔，例如：呃，哼，先说好");
+            y += 38;
+
+            AddLabel("性格备注", 20, y);
+            _tone = AddText(100, y, 480);
+            AddTooltip("一句话概括，例如：嘴硬心软，热情但不好意思");
+            y += 38;
+
+            AddLabel("背景设定", 20, y);
+            _background = new TextBox
+            {
+                Location = new Point(100, y),
+                Size = new Size(480, 90),
+                Multiline = true,
+                ScrollBars = ScrollBars.Vertical,
+                BackColor = CardColor,
+                ForeColor = TextColor,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Microsoft YaHei UI", 9.5f)
+            };
+            Controls.Add(_background);
+            y += 100;
+
+            // 说明
+            var tip = new Label
+            {
+                Text = "性格、说话方式等大段设定在 system.md 里，点下方按钮打开原文编辑。",
+                ForeColor = MutedColor,
+                Location = new Point(20, y),
+                Size = new Size(560, 20)
+            };
+            Controls.Add(tip);
+            y += 32;
+
+            // 按钮区
+            var btnSave = MakeButton("保存", 20, y, 130, BlueColor, BgColor);
+            btnSave.Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold);
+            btnSave.Click += (s, e) => SavePersona();
+            Controls.Add(btnSave);
+
+            var btnReload = MakeButton("重新载入", 160, y, 130, CardColor, TextColor);
+            btnReload.Click += (s, e) => LoadPersona();
+            Controls.Add(btnReload);
+
+            var btnOpenYaml = MakeButton("打开原始文件", 300, y, 140, CardColor, MutedColor);
+            btnOpenYaml.Click += (s, e) => OpenFile(PersonaPath);
+            Controls.Add(btnOpenYaml);
+
+            var btnOpenSystem = MakeButton("打开性格设定", 450, y, 140, CardColor, MutedColor);
+            btnOpenSystem.Click += (s, e) => OpenFile(PromptPath);
+            Controls.Add(btnOpenSystem);
+            y += 48;
+
+            _status = new Label
+            {
+                Text = "",
+                ForeColor = MutedColor,
+                Location = new Point(20, y),
+                Size = new Size(580, 40)
+            };
+            Controls.Add(_status);
+
+            LoadPersona();
+        }
+
+        private void AddLabel(string text, int x, int y)
+        {
+            var lb = new Label
+            {
+                Text = text,
+                ForeColor = MutedColor,
+                Location = new Point(x, y + 4),
+                Size = new Size(76, 22)
+            };
+            Controls.Add(lb);
+        }
+
+        private TextBox AddText(int x, int y, int w)
+        {
+            var tb = new TextBox
+            {
+                Location = new Point(x, y),
+                Size = new Size(w, 26),
+                BackColor = CardColor,
+                ForeColor = TextColor,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Microsoft YaHei UI", 9.5f)
+            };
+            Controls.Add(tb);
+            return tb;
+        }
+
+        private void AddTooltip(string tip) { /* 简化：不挂 ToolTip 组件，避免资源泄漏 */ }
+
+        private Button MakeButton(string text, int x, int y, int w, Color back, Color fore)
+        {
+            var b = new Button
+            {
+                Text = text,
+                Location = new Point(x, y),
+                Size = new Size(w, 34),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = back,
+                ForeColor = fore
+            };
+            b.FlatAppearance.BorderSize = 0;
+            return b;
+        }
+
+        /// <summary>
+        /// 从 default.yaml 里读出关键字段。
+        /// 用极简的逐行解析——不引入 YAML 库，够用就行。
+        /// </summary>
+        private void LoadPersona()
+        {
+            try
+            {
+                if (!File.Exists(PersonaPath))
+                {
+                    SetMsg("找不到人格文件：" + PersonaPath, RedColor);
+                    return;
+                }
+
+                string[] lines = File.ReadAllLines(PersonaPath, Encoding.UTF8);
+                foreach (string raw in lines)
+                {
+                    string line = raw.TrimEnd();
+                    string trimmed = line.TrimStart();
+                    if (trimmed.StartsWith("#")) continue;
+
+                    if (trimmed.StartsWith("name:"))
+                        _name.Text = ValueOf(trimmed, "name:");
+                    else if (trimmed.StartsWith("selfClaim:"))
+                        _selfClaim.Text = ValueOf(trimmed, "selfClaim:");
+                    else if (trimmed.StartsWith("age:"))
+                        _age.Text = ValueOf(trimmed, "age:");
+                    else if (trimmed.StartsWith("habitWords:"))
+                        _habitWords.Text = ParseYamlList(ValueOf(trimmed, "habitWords:"));
+                    else if (trimmed.StartsWith("background:"))
+                        _background.Text = ValueOf(trimmed, "background:").Trim('>', ' ', '|');
+                }
+
+                // tone 是列表，取前两条拼成一句
+                _tone.Text = "";
+                SetMsg("已载入人格设定", GreenColor);
+            }
+            catch (Exception ex)
+            {
+                SetMsg("载入失败：" + ex.Message, RedColor);
+            }
+        }
+
+        private static string ValueOf(string line, string key)
+        {
+            string v = line.Substring(key.Length).Trim();
+            // 去掉行尾注释
+            int hash = v.IndexOf(" #");
+            if (hash > 0) v = v.Substring(0, hash).Trim();
+            return v;
+        }
+
+        /// <summary>["呃", "哼"] → 呃，哼</summary>
+        private static string ParseYamlList(string v)
+        {
+            v = v.Trim();
+            if (v.StartsWith("[")) v = v.Substring(1);
+            if (v.EndsWith("]")) v = v.Substring(0, v.Length - 1);
+            var parts = v.Split(',');
+            var sb = new StringBuilder();
+            foreach (string p in parts)
+            {
+                string s = p.Trim().Trim('"', '\'');
+                if (s.Length == 0) continue;
+                if (sb.Length > 0) sb.Append('，');
+                sb.Append(s);
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>改写 YAML 里的指定 key，保留其它内容和注释</summary>
+        private void SavePersona()
+        {
+            try
+            {
+                if (!File.Exists(PersonaPath))
+                {
+                    SetMsg("找不到人格文件", RedColor);
+                    return;
+                }
+
+                string[] lines = File.ReadAllLines(PersonaPath, Encoding.UTF8);
+                var outLines = new List<string>();
+                bool backgroundDone = false;
+
+                foreach (string raw in lines)
+                {
+                    string trimmed = raw.TrimStart();
+                    string indent = raw.Substring(0, raw.Length - trimmed.Length);
+
+                    if (!trimmed.StartsWith("#"))
+                    {
+                        if (trimmed.StartsWith("name:"))
+                        {
+                            outLines.Add(indent + "name: " + _name.Text.Trim());
+                            continue;
+                        }
+                        if (trimmed.StartsWith("selfClaim:"))
+                        {
+                            outLines.Add(indent + "selfClaim: " + _selfClaim.Text.Trim());
+                            continue;
+                        }
+                        if (trimmed.StartsWith("age:"))
+                        {
+                            outLines.Add(indent + "age: " + _age.Text.Trim());
+                            continue;
+                        }
+                        if (trimmed.StartsWith("habitWords:"))
+                        {
+                            var words = _habitWords.Text.Split(new[] { '，', ',', '、' }, StringSplitOptions.RemoveEmptyEntries);
+                            var sb = new StringBuilder();
+                            foreach (string w in words)
+                            {
+                                if (sb.Length > 0) sb.Append(", ");
+                                sb.Append('"').Append(w.Trim()).Append('"');
+                            }
+                            outLines.Add(indent + "habitWords: [" + sb + "]");
+                            continue;
+                        }
+                        if (trimmed.StartsWith("background:"))
+                        {
+                            // 多行文本用 YAML 的 > 折叠块
+                            outLines.Add(indent + "background: >");
+                            foreach (string bl in _background.Text.Replace("\r\n", "\n").Split('\n'))
+                            {
+                                outLines.Add(indent + "  " + bl.Trim());
+                            }
+                            backgroundDone = true;
+                            continue;
+                        }
+                        // 跳过原 background 的续行（以更多缩进开头的非 key 行）
+                        if (backgroundDone && !trimmed.Contains(":") && trimmed.Length > 0)
+                        {
+                            continue;
+                        }
+                    }
+                    outLines.Add(raw);
+                }
+
+                File.WriteAllLines(PersonaPath, outLines.ToArray(), new UTF8Encoding(false));
+                SetMsg("已保存。需要重启机器人才能生效（点主界面的「全部停止」再「一键全部启动」）。", GreenColor);
+            }
+            catch (Exception ex)
+            {
+                SetMsg("保存失败：" + ex.Message, RedColor);
+            }
+        }
+
+        private void OpenFile(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) { SetMsg("文件不存在：" + path, RedColor); return; }
+                Process.Start("notepad.exe", "\"" + path + "\"");
+                SetMsg("已用记事本打开，改完保存即可", MutedColor);
+            }
+            catch (Exception ex)
+            {
+                SetMsg("打开失败：" + ex.Message, RedColor);
+            }
+        }
+
+        private void SetMsg(string msg, Color color)
+        {
+            if (_status == null) return;
+            _status.Text = msg;
+            _status.ForeColor = color;
         }
     }
 }

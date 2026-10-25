@@ -10,6 +10,10 @@ export interface MemoryConfig {
   explicitKeywords: string[];
   summaryEnabled: boolean;
   summaryMaxChars: number;
+  /** 记忆保留天数，超期自动清理（0 = 永久保留） */
+  ttlDays?: number;
+  /** 单个用户最多保留多少条记忆，超出按「重要度 + 新近度」淘汰 */
+  maxMemories?: number;
 }
 
 /**
@@ -35,10 +39,87 @@ export class MemorySystem {
     this.logger = logger;
   }
 
-  /** 检索与当前消息相关的长期记忆 */
+  /**
+   * 检索与当前消息相关的长期记忆。
+   *
+   * 不只是关键词匹配——还在结果上叠加「新近度」和「重要度」：
+   *   - 昨天说的"我不舒服"比三个月前的更该被想起
+   *   - 但"他没谈过恋爱"这种高权重事实，时间久了也还记得
+   *
+   * 注意：这里刻意不引入向量检索。配置里的 vector 段是为将来准备的，
+   * 强依赖外部 embedding 服务会让整套系统在服务不可用时失效。
+   * 关键词 + 时间衰减 + 重要度，在当前私聊场景下已经够用。
+   */
   retrieve(scopeId: string, query: string): ReturnType<Store['searchMemories']> {
     if (!this.cfg.enabled) return [];
-    return this.store.searchMemories(scopeId, query, this.cfg.topK);
+
+    // 多取一些候选，再按综合分重排
+    const candidates = this.store.searchMemories(scopeId, query, this.cfg.topK * 3);
+    if (candidates.length === 0) return [];
+
+    const now = Date.now();
+    const scored = candidates.map((m) => {
+      const ageDays = (now - (m.createdAt ?? now)) / 86_400_000;
+      // 时间衰减：半年内基本不衰减，之后缓慢下降
+      const recency = ageDays < 180 ? 1 : Math.max(0.3, 1 - (ageDays - 180) / 540);
+      // 重要度直接乘上去；访问次数多的稍微加权（说明反复被想起）
+      const usage = 1 + Math.min(0.3, (m.accessCount ?? 0) * 0.05);
+      const score = m.importance * recency * usage;
+      return { m, score };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, this.cfg.topK).map((s) => s.m);
+  }
+
+  /**
+   * 清理过期记忆。
+   *
+   * 记忆无限增长会有两个问题：
+   *   1. 检索时噪音变多，该想起的事被埋掉
+   *   2. 数据库膨胀
+   *
+   * 淘汰规则：超过 ttlDays 的删掉；超过 maxMemories 条的，
+   * 按「重要度低 + 最久没被访问」优先淘汰。
+   * 白名单记忆（importance >= 0.9）永远不删——那是"他没谈过恋爱"这种核心事实。
+   */
+  prune(scopeId: string): { expired: number; overflow: number } {
+    const expired = 0;
+    const overflow = 0;
+    try {
+      // SQL 层的 TTL 清理由 store 做，这里只处理条数上限
+      const limit = this.cfg.maxMemories;
+      if (!limit) return { expired, overflow };
+
+      const all = this.store.searchMemories(scopeId, '', limit * 3);
+      if (all.length <= limit) return { expired, overflow };
+
+      // 永远保留高权重的
+      const keep = all.filter((m) => m.importance >= 0.9);
+      const rest = all
+        .filter((m) => m.importance < 0.9)
+        // 重要度低的、久未访问的，排在前面等着被删
+        .sort((a, b) => {
+          const sa = a.importance * (1 + Math.min(0.3, (a.accessCount ?? 0) * 0.05));
+          const sb = b.importance * (1 + Math.min(0.3, (b.accessCount ?? 0) * 0.05));
+          return sa - sb;
+        });
+
+      const over = keep.length + rest.length - limit;
+      if (over > 0) {
+        const toDelete = rest.slice(0, over);
+        for (const m of toDelete) {
+          try {
+            this.store.deleteMemory(m.id);
+          } catch { /* 单条失败不影响其它 */ }
+        }
+        this.logger.info({ deleted: toDelete.length, kept: keep.length }, '记忆超限，已淘汰低权重条目');
+        return { expired, overflow: toDelete.length };
+      }
+    } catch (err) {
+      this.logger.warn({ err: (err as Error).message }, '记忆清理失败');
+    }
+    return { expired, overflow };
   }
 
   /** 命中"记住/别忘了"这类显式指令，立即写入 */
