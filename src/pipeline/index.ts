@@ -231,57 +231,61 @@ export class MessagePipeline {
   /**
    * 挑出需要「单独引用回复」的消息。
    *
-   * 三条关键规则（来自用户澄清）：
+   * 用户规则（原话）：
+   *   「以你上一段回复为起始点往下数，
+   *    如果我只发了一条消息，这种情况下是不用进行引用回复的。」
    *
-   * 1) **分批边界是「她上次说话」**，不是固定时间窗口。
-   *    她上次说完话之后你发的所有消息，才算同一批。
-   *    之前用 1.2 秒窗口，你说慢一点就被拆成两批，
-   *    明明只发了一句也被当成"多条"去引用。
+   * 也就是说：
+   *   她回复 → 你发的所有消息 = 一批
+   *   一批里只有 1 条 → 不引用（无论多长）
+   *   一批里有 2 条以上 → 挑几条分别引用
    *
-   * 2) **不是每条都引用**——有些消息本来就能组合成一句。
-   *    「我今天」+「被老板骂了」+「烦死了」应该合成一句回，
-   *    而不是三条分别引用。
-   *
-   * 3) **只有真的"多条独立内容"才挑**。
-   *    同一批里如果只有 1 条实质内容，不引用。
-   *
-   * 实现：
-   *   · 先把同一批里「能合并的」归成若干组
-   *   · 只有组数 >= 2 时才挑（说明确实有多件事）
-   *   · 每组挑一条代表（最长的/带问号的），引用它回
+   * 三条硬规则（按优先级）：
+   *   1. **条数是唯一判据**。1 条 = 不引用，2 条以上才考虑。
+   *      不用时间间隔判断——用户说慢一点不代表是两件事。
+   *   2. **能合并的不分开引**。连续短句（如"我今天"+"被骂了"+"烦死了"）
+   *      归为一句，只算 1 件事。
+   *   3. **最多挑 3 条**，优先带问号的、内容多的。
    */
   pickQuotable(msgs: BufferedMsg[]): BufferedMsg[] {
-    if (msgs.length === 0) return [];
+    // ── 规则 1：一批里只有 1 条，永远不引用 ──
+    if (msgs.length <= 1) return [];
 
-    // 1) 过滤出"有实质内容"的消息（太短的不算一件事）
+    // 有实质内容的（<= 3 字的"嗯""哦"不算一件事）
     const substantial = msgs.filter((m) => m.text.replace(/\s/g, '').length > 3);
-    if (substantial.length === 0) return [];
 
-    // 2) 按「时间接近度」分组：同一批里如果两条相隔很近（<8秒），
-    //    大概率是同一件事的碎片，应该合并而不是分别引用。
+    // 过滤后只剩 1 条或 0 条 → 不引用
+    if (substantial.length <= 1) return [];
+
+    // ── 规则 2：把能合并的归组 ──
+    // 判断标准：连续两条如果都是短句（<= 8 字），大概率是同一句话被拆开。
+    // 长句（> 8 字）本身已经是完整的意思，单独成组。
     const groups: BufferedMsg[][] = [];
     for (const m of substantial) {
-      const lastGroup = groups[groups.length - 1];
-      if (lastGroup && m.at - lastGroup[lastGroup.length - 1].at < 8000) {
-        lastGroup.push(m);
+      const len = m.text.replace(/\s/g, '').length;
+      const last = groups[groups.length - 1];
+      const lastLen = last ? last[last.length - 1].text.replace(/\s/g, '').length : 0;
+
+      // 两条都是短句 → 合并成一组（同一件事的碎片）
+      if (last && len <= 8 && lastLen <= 8) {
+        last.push(m);
       } else {
         groups.push([m]);
       }
     }
 
-    // 3) 只有一件事 → 不引用（直接回更自然）
-    if (groups.length < 2) return [];
+    // 归组后只有 1 件事 → 不引用
+    if (groups.length <= 1) return [];
 
-    // 4) 每组挑一个代表：优先带问号的，其次最长的
+    // ── 规则 3：每组挑一个代表 ──
     const picked: BufferedMsg[] = groups.map((g) => {
       const withQ = g.filter((m) => /[?？]/.test(m.text));
       const pool = withQ.length > 0 ? withQ : g;
-      return pool.reduce((a, b) =>
-        b.text.length > a.text.length ? b : a,
-      );
+      // 挑最长的（信息量最大）
+      return pool.reduce((a, b) => (b.text.length > a.text.length ? b : a));
     });
 
-    // 5) 最多 3 条
+    // 最多 3 条，按原始顺序
     return picked.slice(0, 3).sort((a, b) => a.at - b.at);
   }
 
