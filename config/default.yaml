@@ -37,8 +37,8 @@ pipeline:
   #   这样"慢慢说完一件事"会被合并成一次处理。
   # 1.2 秒静默期：足够把"说话断断续续"合并成一次，
   # 又不会让你干等。mergeMaxWaitMs 是硬上限，防止极端情况卡死。
-  mergeWindowMs: 1200
-  mergeMaxWaitMs: 6000
+  mergeWindowMs: 3500        # 静默多久算"说完了"。1.2 秒太短，打一个字就重算，容易把一句话拆成两批
+  mergeMaxWaitMs: 12000      # 硬上限：最多等这么久就强制处理，防止一直等下去
   dedup:
     enabled: true
     windowMs: 5000

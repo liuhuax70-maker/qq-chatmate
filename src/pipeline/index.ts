@@ -75,6 +75,15 @@ export class MessagePipeline {
   private seen = new Map<string, number>();
   private buffers = new Map<string, BufferEntry>();
   private recentReplyTimes: number[] = [];
+
+  /**
+   * 上次回复的时间戳。
+   *
+   * 这是「分批」的天然边界：她上次说完话之后的你发的话，
+   * 才算「同一批」。之前用固定时间窗口（1.2 秒）划分，
+   * 结果你说慢一点就被算成两批，明明只发了一句也被当成"多条"。
+   */
+  private lastReplyAt = 0;
   private recentUserMessageTimes: number[] = [];
   /** 上次因节流而跳过的时刻，用于冷却期判断 */
   private lastSkipAt = 0;
@@ -222,51 +231,58 @@ export class MessagePipeline {
   /**
    * 挑出需要「单独引用回复」的消息。
    *
-   * 需求澄清：不是"长消息就引用"，而是**多条消息时挑几个重要的分别回**。
-   * 你连发几条、信息量很大时，她挑其中最有内容的分别引用回复，
-   * 而不是笼统回一句。单条消息永远不引用。
+   * 三条关键规则（来自用户澄清）：
    *
-   * 规则：
-   *   · msgs.length < 2     → 不引用
-   *   · 带问号              → 优先（他在问事）
-   *   · 字数多              → 次优先
-   *   · <= 3 字的           → 排除（"在吗""嗯"不值得单独引用）
-   *   · 最多挑 3 条，2 条消息时只挑 1 条
+   * 1) **分批边界是「她上次说话」**，不是固定时间窗口。
+   *    她上次说完话之后你发的所有消息，才算同一批。
+   *    之前用 1.2 秒窗口，你说慢一点就被拆成两批，
+   *    明明只发了一句也被当成"多条"去引用。
+   *
+   * 2) **不是每条都引用**——有些消息本来就能组合成一句。
+   *    「我今天」+「被老板骂了」+「烦死了」应该合成一句回，
+   *    而不是三条分别引用。
+   *
+   * 3) **只有真的"多条独立内容"才挑**。
+   *    同一批里如果只有 1 条实质内容，不引用。
+   *
+   * 实现：
+   *   · 先把同一批里「能合并的」归成若干组
+   *   · 只有组数 >= 2 时才挑（说明确实有多件事）
+   *   · 每组挑一条代表（最长的/带问号的），引用它回
    */
   pickQuotable(msgs: BufferedMsg[]): BufferedMsg[] {
-    if (msgs.length < 2) return [];
+    if (msgs.length === 0) return [];
 
-    const scored = msgs
-      .map((m) => {
-        const len = m.text.replace(/\s/g, '').length;
-        const isQuestion = /[?？]/.test(m.text);
-        const tooShort = len <= 3;
-        let score = len;
-        if (isQuestion) score += 20;
-        if (tooShort) score -= 100;
-        return { m, score };
-      })
-      .filter((x) => x.score > 0)
-      .sort((a, b) => b.score - a.score);
+    // 1) 过滤出"有实质内容"的消息（太短的不算一件事）
+    const substantial = msgs.filter((m) => m.text.replace(/\s/g, '').length > 3);
+    if (substantial.length === 0) return [];
 
-    if (scored.length === 0) return [];
-
-    const maxPick = msgs.length === 2 ? 1 : Math.min(3, scored.length);
-    const picked: BufferedMsg[] = [];
-    const usedTexts: string[] = [];
-
-    for (const s of scored) {
-      if (picked.length >= maxPick) break;
-      const dup = usedTexts.some(
-        (t) => t.includes(s.m.text.slice(0, 6)) || s.m.text.includes(t.slice(0, 6)),
-      );
-      if (dup) continue;
-      picked.push(s.m);
-      usedTexts.push(s.m.text);
+    // 2) 按「时间接近度」分组：同一批里如果两条相隔很近（<8秒），
+    //    大概率是同一件事的碎片，应该合并而不是分别引用。
+    const groups: BufferedMsg[][] = [];
+    for (const m of substantial) {
+      const lastGroup = groups[groups.length - 1];
+      if (lastGroup && m.at - lastGroup[lastGroup.length - 1].at < 8000) {
+        lastGroup.push(m);
+      } else {
+        groups.push([m]);
+      }
     }
 
-    // 按原始时间顺序返回
-    return picked.sort((a, b) => a.at - b.at);
+    // 3) 只有一件事 → 不引用（直接回更自然）
+    if (groups.length < 2) return [];
+
+    // 4) 每组挑一个代表：优先带问号的，其次最长的
+    const picked: BufferedMsg[] = groups.map((g) => {
+      const withQ = g.filter((m) => /[?？]/.test(m.text));
+      const pool = withQ.length > 0 ? withQ : g;
+      return pool.reduce((a, b) =>
+        b.text.length > a.text.length ? b : a,
+      );
+    });
+
+    // 5) 最多 3 条
+    return picked.slice(0, 3).sort((a, b) => a.at - b.at);
   }
 
   /** 合并后的处理主逻辑 */
@@ -285,8 +301,13 @@ export class MessagePipeline {
     for (let i = 0; i < count; i++) this.recentUserMessageTimes.push(now);
     this.recentUserMessageTimes = this.recentUserMessageTimes.filter((t) => now - t < floodWindow);
 
+    // 分批：她上次说话之后的消息才算同一批。
+    // 这是天然边界——比固定时间窗口可靠得多。
+    const batchMsgs = msgs.filter((m) => m.at > this.lastReplyAt);
+    const effectiveMsgs = batchMsgs.length > 0 ? batchMsgs : msgs;
+
     // 挑出要单独引用的那几条
-    const quotable = this.pickQuotable(msgs);
+    const quotable = this.pickQuotable(effectiveMsgs);
 
     onReady({
       action: 'reply',
@@ -299,6 +320,7 @@ export class MessagePipeline {
   }
 
   markReplied(): void {
+    this.lastReplyAt = Date.now();
     this.recentReplyTimes.push(Date.now());
   }
 
