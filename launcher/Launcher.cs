@@ -1812,7 +1812,10 @@ namespace QQChatmateLauncher
         private TextBox _age;
         private TextBox _background;
         private TextBox _habitWords;
-        private TextBox _tone;
+        /// <summary>人设事实：一行一条，注入 system.md 的 &lt;about-self&gt;。
+        /// 以前这里是「性格备注」（写 tone），但 tone 已废弃、也不注入 prompt，
+        /// 填了完全没效果。改成 facts 之后编辑才真的影响人格。</summary>
+        private TextBox _facts;
         private Label _status;
 
         private static readonly Color BgColor = Color.FromArgb(15, 23, 42);
@@ -1858,13 +1861,24 @@ namespace QQChatmateLauncher
 
             AddLabel("口头禅", 20, y);
             _habitWords = AddText(100, y, 480);
-            AddTooltip("用中文逗号分隔，例如：呃，哼，先说好");
+            AddTooltip("用中文逗号分隔，例如：呃，哼，先说好（会注入 <voice>）");
             y += 38;
 
-            AddLabel("性格备注", 20, y);
-            _tone = AddText(100, y, 480);
-            AddTooltip("一句话概括，例如：嘴硬心软，热情但不好意思");
-            y += 38;
+            AddLabel("人设事实", 20, y);
+            AddTooltip("一行一条，会注入 <about-self>。例如：把米饭当主食 / 自称鲸鱼");
+            _facts = new TextBox
+            {
+                Location = new Point(100, y),
+                Size = new Size(480, 70),
+                Multiline = true,
+                ScrollBars = ScrollBars.Vertical,
+                BackColor = CardColor,
+                ForeColor = TextColor,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Microsoft YaHei UI", 9.5f)
+            };
+            Controls.Add(_facts);
+            y += 80;
 
             AddLabel("背景设定", 20, y);
             _background = new TextBox
@@ -2000,8 +2014,9 @@ namespace QQChatmateLauncher
                         _background.Text = ValueOf(trimmed, "background:").Trim('>', ' ', '|');
                 }
 
-                // tone 是列表，取前两条拼成一句
-                _tone.Text = "";
+                // facts 是 YAML 列表，单独扫一遍（在 facts: 下面，每行 "- 内容"）
+                _facts.Text = ParseYamlBlockList(lines, "facts:");
+
                 SetMsg("已载入人格设定", GreenColor);
             }
             catch (Exception ex)
@@ -2017,6 +2032,64 @@ namespace QQChatmateLauncher
             int hash = v.IndexOf(" #");
             if (hash > 0) v = v.Substring(0, hash).Trim();
             return v;
+        }
+
+        /// <summary>把人设事实按 YAML 列表写出去（一行一条）。</summary>
+        private void WriteFacts(List<string> outLines, string itemIndent)
+        {
+            string[] rows = _facts.Text.Replace("\r\n", "\n").Split('\n');
+            bool any = false;
+            foreach (string r in rows)
+            {
+                string v = r.Trim();
+                if (v.Length == 0) continue;
+                outLines.Add(itemIndent + "- " + v);
+                any = true;
+            }
+            if (!any) outLines.Add(itemIndent + "- （空）");
+        }
+
+        /// <summary>
+        /// 读 YAML 里的块状列表（key 下面若干行 "- 内容"）。
+        /// 用于 identity.facts。
+        /// </summary>
+        private static string ParseYamlBlockList(string[] lines, string key)
+        {
+            var sb = new StringBuilder();
+            bool inBlock = false;
+            int blockIndent = -1;
+
+            foreach (string raw in lines)
+            {
+                string trimmed = raw.TrimStart();
+                if (trimmed.StartsWith("#")) continue;
+
+                if (!inBlock)
+                {
+                    if (trimmed.StartsWith(key)) { inBlock = true; blockIndent = -1; }
+                    continue;
+                }
+
+                // 空行：可能是列表里的空行，也可能是块结束
+                if (trimmed.Length == 0) continue;
+
+                int indent = raw.Length - trimmed.Length;
+
+                if (trimmed.StartsWith("- "))
+                {
+                    if (blockIndent < 0) blockIndent = indent;
+                    if (indent == blockIndent)
+                    {
+                        if (sb.Length > 0) sb.Append('\n');
+                        sb.Append(trimmed.Substring(2).Trim());
+                        continue;
+                    }
+                }
+
+                // 出现缩进更浅、且不是 "- " 的行 → 这块结束了
+                if (indent <= blockIndent || blockIndent < 0) break;
+            }
+            return sb.ToString();
         }
 
         /// <summary>["呃", "哼"] → 呃，哼</summary>
@@ -2051,14 +2124,40 @@ namespace QQChatmateLauncher
                 string[] lines = File.ReadAllLines(PersonaPath, Encoding.UTF8);
                 var outLines = new List<string>();
                 bool backgroundDone = false;
+                bool factsDone = false;
+                bool inFacts = false;
+                int factsIndent = -1;
 
                 foreach (string raw in lines)
                 {
                     string trimmed = raw.TrimStart();
                     string indent = raw.Substring(0, raw.Length - trimmed.Length);
 
+                    // facts 块：key 行之后的所有 "- xxx" 都要替换
+                    if (inFacts)
+                    {
+                        if (trimmed.Length == 0) { outLines.Add(raw); continue; }
+                        int ind = raw.Length - trimmed.Length;
+                        if (trimmed.StartsWith("- ") && (factsIndent < 0 || ind == factsIndent))
+                        {
+                            if (factsIndent < 0) factsIndent = ind;
+                            continue;   // 丢掉旧的列表项，稍后统一写入
+                        }
+                        // 块结束 → 补上新的列表项再继续正常处理
+                        WriteFacts(outLines, indent + "  ");
+                        inFacts = false;
+                        factsDone = true;
+                    }
+
                     if (!trimmed.StartsWith("#"))
                     {
+                        if (trimmed.StartsWith("facts:"))
+                        {
+                            outLines.Add(raw);
+                            inFacts = true;
+                            factsIndent = -1;
+                            continue;
+                        }
                         if (trimmed.StartsWith("name:"))
                         {
                             outLines.Add(indent + "name: " + _name.Text.Trim());
@@ -2106,8 +2205,11 @@ namespace QQChatmateLauncher
                     outLines.Add(raw);
                 }
 
-                File.WriteAllLines(PersonaPath, outLines.ToArray(), new UTF8Encoding(false));
-                SetMsg("已保存。需要重启机器人才能生效（点主界面的「全部停止」再「一键全部启动」）。", GreenColor);
+                // facts 是文件最后一个块时，收尾
+                if (inFacts) { WriteFacts(outLines, "    "); factsDone = true; }
+                if (!factsDone) { /* 文件里没有 facts 键，不新增，保持原样 */ }
+
+                File.WriteAllLines(PersonaPath, outLines.ToArray(), new UTF8Encoding(false));                SetMsg("已保存。需要重启机器人才能生效（点主界面的「全部停止」再「一键全部启动」）。", GreenColor);
             }
             catch (Exception ex)
             {

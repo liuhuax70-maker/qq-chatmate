@@ -70,6 +70,16 @@ export class Session {
     this.peerId = cfg.peerId;
     this.persona = persona;
 
+    // ⚠️ 情绪回归速度的优先级：人格档案 > 全局 config。
+    //
+    // 以前是反过来的（只读 cfg.moodDecayPerHour），persona YAML 里的
+    // decayPerHour 完全没人读。结果「0.15 太慢会一直卡在负值里，
+    // 改成 0.45」这条修复一直没生效——改人格档案等于白改。
+    // 现在人格档案里写了就用它，没写才回退全局。
+    if (typeof persona.mood.decayPerHour === 'number') {
+      cfg.moodDecayPerHour = persona.mood.decayPerHour;
+    }
+
     const rec = store.getSession(cfg.sessionId);
     if (rec) {
       this.mood = rec.mood;

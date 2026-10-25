@@ -32,7 +32,14 @@ export interface PersonaData {
   };
   mood: {
     initial: number;
-    decayPerHour: number;
+    /**
+     * 情绪回归速度。
+     *
+     * ⚠️ 刻意不做默认值：`undefined` 表示「人格档案没指定，用全局 config」。
+     * 以前这里默认 0.15，结果 persona YAML 里写的 0.45 永远覆盖不掉 config，
+     * 改了人格档案等于没改。
+     */
+    decayPerHour?: number;
     floor: number;
     ceiling: number;
     triggers: { positive: { keywords: string[]; delta: number }; negative: { keywords: string[]; delta: number } };
@@ -80,7 +87,8 @@ export function loadPersona(dir: string, name: string): PersonaData {
     },
     mood: {
       initial: raw.mood?.initial ?? 0,
-      decayPerHour: raw.mood?.decayPerHour ?? 0.15,
+      // 不写 ?? 0.15 —— 让「没配置」保持 undefined，由调用方回退到全局 config。
+      decayPerHour: typeof raw.mood?.decayPerHour === 'number' ? raw.mood.decayPerHour : undefined,
       floor: raw.mood?.floor ?? -0.6,
       ceiling: raw.mood?.ceiling ?? 0.6,
       triggers: {

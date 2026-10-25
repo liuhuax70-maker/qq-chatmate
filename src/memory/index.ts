@@ -44,7 +44,7 @@ export class MemorySystem {
    *
    * 不只是关键词匹配——还在结果上叠加「新近度」和「重要度」：
    *   - 昨天说的"我不舒服"比三个月前的更该被想起
-   *   - 但"他没谈过恋爱"这种高权重事实，时间久了也还记得
+   *   - 但"他讨厌香菜"这种高权重事实，时间久了也还记得
    *
    * 注意：这里刻意不引入向量检索。配置里的 vector 段是为将来准备的，
    * 强依赖外部 embedding 服务会让整套系统在服务不可用时失效。
@@ -81,7 +81,7 @@ export class MemorySystem {
    *
    * 淘汰规则：超过 ttlDays 的删掉；超过 maxMemories 条的，
    * 按「重要度低 + 最久没被访问」优先淘汰。
-   * 白名单记忆（importance >= 0.9）永远不删——那是"他没谈过恋爱"这种核心事实。
+   * 白名单记忆（importance >= 0.9）永远不删——那是"他讨厌香菜"这种核心事实。
    */
   prune(scopeId: string): { expired: number; overflow: number } {
     const expired = 0;

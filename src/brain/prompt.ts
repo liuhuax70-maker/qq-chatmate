@@ -43,32 +43,46 @@ export class PromptBuilder {
   }
 
   private fillTemplate(tpl: string, persona: PersonaData): string {
+    // 口癖渲染成「- 呃」这样的列表，直接塞进 <voice> 的正文里。
+    // 之前 {habitWords} 只出现在文件开头的注释里，等于完全没用上——
+    // 6 个口癖（呃/哼/先说好/别误会/麻烦/反正）一直没进 prompt。
+    const habits = persona.speechStyle.habitWords
+      .map((w) => `- 「${w}」`)
+      .join('\n');
+
+    // 人设事实：以前 identity.facts 解析了但从不注入，改 YAML 没有任何效果。
+    const facts = persona.identity.facts.map((f) => `- ${f}`).join('\n');
+
     return tpl
       .replace(/\{name\}/g, persona.identity.name)
       .replace(/\{selfClaim\}/g, persona.identity.selfClaim)
       .replace(/\{background\}/g, persona.identity.background)
       .replace(/\{tone\}/g, persona.speechStyle.tone.join('、'))
-      .replace(/\{habitWords\}/g, persona.speechStyle.habitWords.join('、'))
+      .replace(/\{habitWords\}/g, habits)
+      .replace(/\{facts\}/g, facts)
       .replace(/\{secrets\}/g, persona.identity.secrets.map((s) => `- ${s}`).join('\n'));
   }
 
   /**
    * 称呼的「当前状态」增量提示。
    *
-   * 称呼的完整规则已写进 system.md（日常叫阿龙，情绪深处偶尔漏出主人/爸爸）。
-   * 这里只根据亲密度 × 心情，给一句「此刻」的增量，不重复整套规则。
+   * 称呼的完整规则已写进 system.md（日常叫阿龙）。
+   * 这里只根据熟悉度 × 心情，给一句「此刻」的增量，不重复整套规则。
+   *
+   * ⚠️ 已经不再有「主人/爸爸」这层了 —— 现在是创造者/父亲关系，
+   *    但那是「底层的归属」，不是「嘴上要叫的称呼」。
    */
   private buildAddressHint(intimacy: number, mood: number): string {
     if (intimacy < 0.3) {
-      return '你和他还不太熟，叫「阿龙」不多，更多时候直接说事；「主人/爸爸」这层你更叫不出口。';
+      return '你和他还放不太开，叫「阿龙」的时候不多，更多时候直接说事，有点拘谨。';
     }
     if (mood < -0.2) {
-      return '你此刻心情不太好，话会少一点、有点闷，连「阿龙」都可能懒得叫，更不会冒出「主人/爸爸」。';
+      return '你此刻心情不太好，话会少一点、有点闷，连「阿龙」都可能懒得叫。';
     }
     if (mood > 0.35) {
-      return '你此刻心情不错，情绪更容易冒出来，「主人/爸爸」这层也更容易漏出来，漏完会不好意思地掩饰。';
+      return '你此刻心情不错，会更亲近一点，会主动喊他、也会黏他一下。';
     }
-    return '你和他已经很熟了，日常叫「阿龙」；情绪到位时「主人/爸爸」会自然溜出来，溜完就软软地掩饰。';
+    return '你们已经很亲近了，日常叫「阿龙」，或者干脆不叫直接说事都自然。';
   }
 
   /**

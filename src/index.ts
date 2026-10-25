@@ -304,7 +304,7 @@ async function main(): Promise<void> {
   const buildShortReplyTo = async (msgText: string): Promise<string> => {
     try {
       const prompt = [
-        '你在跟恋人聊天。他刚才发了这一条：',
+        '你在跟阿龙聊天。他刚才发了这一条：',
         `「${msgText}」`,
         '',
         '针对这一条，回一句简短的话（10 字以内）。',

@@ -97,10 +97,11 @@ console.log('\n[2] 关键段落必须存在（防止 system.md 被改坏）');
   const session = makeSession(store);
   const system = String(builder.build(session, '嗯')[0].content ?? '');
 
-  for (const tag of ['<role>', '<love>', '<character>', '<voice>', '<human>', '<reactions>', '<limits>', '<pacing>']) {
+  for (const tag of ['<role>', '<bond>', '<character>', '<voice>', '<human>', '<reactions>', '<limits>', '<pacing>', '<about-self>']) {
     check(`含 ${tag} 段`, system.includes(tag));
   }
-  check('恋爱身份已注入', system.includes('恋爱对象'));
+  check('创造者/父亲关系已注入', system.includes('创造者') && system.includes('父亲'));
+  check('已经把恋爱定位清掉了', !system.includes('恋爱对象') && !system.includes('谈恋爱'));
   check('短回复约束已注入', system.includes('10 字以内') || system.includes('短'));
   check('禁止 emoji 约束已注入', system.includes('emoji'));
   check('必须回复的约束已注入', system.includes('必须回') || system.includes('每一条'));
@@ -118,6 +119,66 @@ console.log('\n[2] 关键段落必须存在（防止 system.md 被改坏）');
   check('LANG ZH CN ONLY：只说中文', system.includes('只说中文'));
   check('角色名是大肥鱼', system.includes('大肥鱼'));
   check('没有旧名鲸奈', !system.includes('鲸奈'));
+
+  store.close();
+}
+
+console.log('\n[2b] persona 的 facts / habitWords 必须真的进 prompt');
+{
+  const store = freshStore();
+  const builder = makeBuilder(store);
+  const session = makeSession(store);
+  const system = String(builder.build(session, '嗯')[0].content ?? '');
+
+  // facts：以前 identity.facts 解析了但从不注入，改 YAML 完全无效
+  check('注入 facts：米饭当主食', system.includes('米饭'));
+  check('注入 facts：创造者/父亲', system.includes('创造者'));
+  check('没有未替换的 {facts}', !system.includes('{facts}'));
+
+  // habitWords：以前只出现在 system.md 开头的注释里，等于没用上
+  check('注入口癖「呃」', system.includes('「呃」'));
+  check('注入口癖「先说好」', system.includes('「先说好」'));
+  check('注入口癖「别误会」', system.includes('「别误会」'));
+  check('没有未替换的 {habitWords}', !system.includes('{habitWords}'));
+
+  // system.md 开头的开发注释不该进 prompt（浪费上下文）
+  check('没有把开发注释塞进 prompt', !system.includes('写卡原则'));
+
+  store.close();
+}
+
+console.log('\n[2c] 情绪回归速度：人格档案要能覆盖全局 config');
+{
+  const store = freshStore();
+  // 传一个明显不同的全局值，人格档案里的 0.45 应该赢
+  const session = createSession(
+    { sessionId: 'decay-test', peerId: '10001' },
+    {
+      shortTermLimit: 20,
+      moodDecayPerHour: 0.15,
+      moodFloor: -0.6,
+      moodCeiling: 0.6,
+      intimacy: { enabled: true, perExchange: 0.01, decayPerDay: 0, decayAfterDays: 30, max: 1 },
+    },
+    store,
+    path.join(ROOT, 'config', 'personas'),
+    'default',
+    logger,
+  );
+  const persona = loadPersona(path.join(ROOT, 'config', 'personas'), 'default');
+  check('人格档案声明了 decayPerHour', typeof persona.mood.decayPerHour === 'number');
+  check('人格档案的值是 0.45', persona.mood.decayPerHour === 0.45, String(persona.mood.decayPerHour));
+
+  // 行为验证：负向 5 次 → 记录情绪 → 模拟 1 小时 → 衰减应接近全没
+  for (let i = 0; i < 5; i++) session.recordUser('你好烦 烦死了');
+  const low = session.mood;
+  check('负面情绪已拉低', low < 0.1, low.toFixed(3));
+
+  // 用 0.45 的话，1 小时后情绪只剩 55%（0.15 则还剩 85%）
+  const { decayMood } = require('../src/persona') as typeof import('../src/persona');
+  const after1h = decayMood(low, 3600000, 0.45, -0.6, 0.6);
+  const ratio = after1h / low;
+  check('按 0.45 衰减，1 小时后剩约 55%', Math.abs(ratio - 0.55) < 0.02, ratio.toFixed(3));
 
   store.close();
 }

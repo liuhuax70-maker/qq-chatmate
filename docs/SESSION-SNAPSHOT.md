@@ -7,7 +7,7 @@
 
 ## 一、项目定位
 
-QQ 恋爱陪伴机器人「大肥鱼」。核心目标：**双击桌面图标 → 自动连 QQ → 和自定义角色聊天**。
+QQ 陪伴机器人「大肥鱼」。核心目标：**双击桌面图标 → 自动连 QQ → 和自定义角色聊天**。
 
 ---
 
@@ -25,11 +25,12 @@ PERSONALITY SMART LAZY → 聪明但懒：脑子快身体不想动，看穿一�
 PERSONALITY TSUNDERE SWEET → 三分傲七分娇，软是底色
 ```
 
-**身份**：名字 `大肥鱼`，自称 `鲸娘`，是阿龙的**恋人**（也是最好的朋友）。
-心里还叠着「爸爸」「主人」的分量，几乎不挂嘴上，只在情绪冲出来时偶尔漏。
+**身份**：名字 `大肥鱼`，自称 `鲸娘`。
+**关系（2026-10-26 重构）**：阿龙是**创造她的人，是她的父亲**。已彻底移除全部恋爱定位。
+她是被做出来的女儿，心里清楚这层关系但不天天提，会闹会顶嘴但心里认他。
 
 **口癖**：呃、哼、先说好、别误会、麻烦、反正
-**禁用**：任何 emoji、12 条客服化表达
+**禁用**：任何 emoji、12 条客服化表达 + 2 条刻板父女腔（"是的父亲大人""主人请吩咐"）
 
 **当前状态**：亲密度 1.00（满）、情绪 0（平静）、60 轮对话
 
@@ -39,9 +40,23 @@ PERSONALITY TSUNDERE SWEET → 三分傲七分娇，软是底色
 
 | 文件 | 内容 |
 |---|---|
-| `qq-netizen/config/personas/default.yaml` | 身份、口癖、情绪参数、亲密度档位 |
-| `qq-netizen/config/prompts/system.md` | 8 段：role/love/character/voice/human/reactions/limits/pacing |
+| `qq-netizen/config/personas/default.yaml` | 身份、facts、口癖、情绪参数、熟悉度档位 |
+| `qq-netizen/config/prompts/system.md` | 9 段：role/bond/character/voice/human/reactions/limits/pacing/about-self |
+| `qq-netizen/config/prompts/rules.md` | 12 条硬红线 |
 | `qq-netizen/config/default.yaml` | 作息、主动频率、语音、合并窗口等行为参数 |
+
+**占位符注入**（`src/brain/prompt.ts`）：
+
+| 占位符 | 来源 | 注入位置 |
+|---|---|---|
+| `{name}` `{selfClaim}` `{background}` | persona.identity | `<role>` |
+| `{habitWords}` | persona.speechStyle | `<voice>`（2026-10-26 修复：以前只写在注释里，等于没用） |
+| `{facts}` | persona.identity | `<about-self>`（2026-10-26 新增） |
+| `{secrets}` | persona.identity | `<about-self>` |
+
+⚠️ `{tone}` 仍支持但 system.md 已不再引用（性格统一定义在 `<character>`）。
+
+⚠️ 情绪回归速度优先级：**persona YAML > config/default.yaml**（2026-10-26 修复）。
 
 ---
 
@@ -218,14 +233,17 @@ npm run test:sleep         # 23
 npm run test:split         # 12
 npm run test:stickers      # 38
 npm run test:stickerkey    # 6
-npm run test:prompt        # 37
+npm run test:prompt        # 51
 npm run test:session       # 22
 npm run test:memory        # 16
 npm run test:tts           # 26
 npm run test:skills        # 29
 npm run test:quote         # 9
+npm run test:quote-e2e     # 9
 npm run test:quote-real    # 9
 ```
+
+合计 **275** 项断言。
 
 ---
 
