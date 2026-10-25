@@ -59,10 +59,22 @@ if ($LASTEXITCODE -ne 0) { Write-Host '[FAILED] console build' -ForegroundColor 
 # 部署（先删旧文件；被占用时用新名字）
 # 注意：这里不写中文字面量——PowerShell 5.1 用 -File 调用时
 # 会把脚本里的中文按 GBK 重新解释，导致文件名变成乱码。
-# 改为从现有 exe 推断目标名，找不到就用 ASCII 名。
-$existingExes = Get-ChildItem $here -Filter '*.exe' -File -ErrorAction SilentlyContinue
-$guiExisting = $existingExes | Where-Object { $_.BaseName -notmatch 'status|状态|_old' } | Select-Object -First 1
-$consoleExisting = $existingExes | Where-Object { $_.BaseName -match 'status|状态' } | Select-Object -First 1
+# 所以用「星号通配 + 排除法」定位已有的 exe，避免硬编码中文名。
+#
+# 排除清单必须写全：_trash*.exe / cleanup 之类残留的测试 exe
+# 以前就踩过坑——_trash.exe 被当成 GUI 版本，真正的大肥鱼.exe 没更新。
+$existingExes = Get-ChildItem $here -Filter '*.exe' -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -notmatch '^_trash' }
+
+$guiExisting = $existingExes |
+    Where-Object { $_.BaseName -notmatch 'status|_old|cleanup' -and $_.BaseName -match '[\u4e00-\u9fff]' } |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if (-not $guiExisting) {
+    $guiExisting = $existingExes |
+        Where-Object { $_.BaseName -notmatch 'status|_old|cleanup' } |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+}
+$consoleExisting = $existingExes | Where-Object { $_.BaseName -match 'status' } | Select-Object -First 1
 
 if ($guiExisting) { $guiTarget = $guiExisting.FullName } else { $guiTarget = Join-Path $here 'qinai-launcher.exe' }
 if ($consoleExisting) { $consoleTarget = $consoleExisting.FullName } else { $consoleTarget = Join-Path $here 'qinai-status.exe' }

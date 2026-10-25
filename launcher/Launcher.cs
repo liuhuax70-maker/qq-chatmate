@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -252,11 +252,6 @@ namespace QQChatmateLauncher
         }
         /// <summary>
         /// 判断协议端是否在运行。
-        /// 用多个可能的进程名探测（不同版本/发布方式进程名可能是 Lagrange.OneBot
-        /// 或 dotnet），避免只匹配一个名字导致误判为"已停止"。
-        /// </summary>
-        /// <summary>
-        /// 判断协议端是否在运行。
         /// NapCat 是 hook 到 QQ 进程里跑的，所以判断「QQ 被 NapCat 拉起」。
         /// 用 tasklist 判断，避免 GetProcessesByName 在受限权限下返回 0。
         /// </summary>
@@ -264,32 +259,29 @@ namespace QQChatmateLauncher
         {
             // 判据优先级：
             //   1. 机器人 healthz = connected → 协议端肯定在线（最权威）
-            //   2. QQ 进程存在 → NapCat 可能正在启动/登录中
-            // 注意：不用 wmic 查命令行（部分环境没有 wmic）。
+            //   2. NapCat 的 WebUI 端口 6099 在听 → NapCat 活着
+            //   3. QQ 进程存在 → 可能正在启动/登录中
+            //
+            // ⚠️ 第 3 条单独用会误判：用户自己开的 QQ（D:\qq\QQ.exe）
+            //    也叫 QQ.exe，它跟 NapCat 没关系。
+            //    以前靠它判断，导致「NapCat 没起但你以为起了」，
+            //    也导致「重启机器人时顺手把用户自己的 QQ 杀了」。
             if (IsProtocolConnected()) return true;
-
-            foreach (string img in new[] { "QQ.exe", "QQEX.exe" })
-            {
-                try
-                {
-                    var psi = new ProcessStartInfo("tasklist", "/FI \"IMAGENAME eq " + img + "\" /FO CSV /NH")
-                    {
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true
-                    };
-                    using (var p = Process.Start(psi))
-                    {
-                        string o = p.StandardOutput.ReadToEnd();
-                        p.WaitForExit(6000);
-                        if (o.IndexOf(img, StringComparison.OrdinalIgnoreCase) >= 0) return true;
-                    }
-                }
-                catch { }
-            }
-            return false;
+            if (IsNapCatRunning()) return true;
+            return AnyProcess("QQ.exe") || AnyProcess("QQEX.exe");
         }
+
+        /// <summary>
+        /// NapCat 是否已经在跑（且已登录）。
+        /// 判据：它的 WebUI 端口 6099 在监听 —— 这个端口只有 NapCat 主进程活着才有。
+        /// 用它来区分「NapCat 没起」和「NapCat 起来了但机器人连不上」，
+        /// 后者只需要重启机器人，绝不能去动 QQ（一动就掉登录）。
+        /// </summary>
+        public static bool IsNapCatRunning()
+        {
+            return TestPort(6099);
+        }
+
         public static bool TestSignContainer()
         {
             // 最强信号：签名服务端口在监听（8090）。
@@ -358,7 +350,10 @@ namespace QQChatmateLauncher
                     if (IsProtocolConnected()) return null;
 
                     // NapCat 没在跑 → 不显示旧码（否则"已停止却还能扫码"）
-                    if (!TestLagrange()) return null;
+                    // 注意用 IsNapCatRunning 而不是 TestLagrange：
+                    // 你自己开的 QQ（D:\qq\QQ.exe）也会让 TestLagrange 为真，
+                    // 但那个 QQ 跟 NapCat 的二维码毫无关系。
+                    if (!IsNapCatRunning()) return null;
 
                     var t = File.GetLastWriteTime(napcatQr);
                     // 二维码有效期约 5 分钟
@@ -440,7 +435,12 @@ namespace QQChatmateLauncher
         /// </summary>
         public static void KillAllChildren()
         {
-            // 1) 先清理我们自己记录的进程
+            // 0) 第一件事：正常关闭 QQ。
+            //    必须排在最前 —— QQ 的登录凭证是在退出流程里刷盘的，
+            //    任何先执行 taskkill /F 的步骤都可能把它打断。
+            try { StopLagrange(); } catch { }
+
+            // 1) 再清理我们自己记录的进程
             lock (Children)
             {
                 foreach (var p in Children)
@@ -451,7 +451,7 @@ namespace QQChatmateLauncher
                 Children.Clear();
             }
 
-            // 2) 再按端口/进程名兜底清理（防止有孤儿进程）
+            // 2) 按端口/进程名兜底清理（防止有孤儿进程）
             try { StopBot(); } catch { }
             try { StopLagrange(); } catch { }
             try { StopTts(); } catch { }
@@ -580,17 +580,98 @@ namespace QQChatmateLauncher
             }
             catch { }
         }
-        /// <summary>
-        /// 关掉所有残留的 QQ 进程。
-        ///
-        /// 为什么必须做：NapCat 通过注入 QQ 进程工作。
-        /// 如果用户手动开着 QQ，或者上次退出没清干净，
-        /// NapCat 要么注入失败，要么注入到错误实例，表现为"点了没反应"。
-        /// </summary>
-        public static void KillLeftoverQQ()
+        /// <summary>按镜像名判断进程是否存在（tasklist 比 GetProcess 在受限权限下更可靠）。</summary>
+        public static bool AnyProcess(string imageName)
         {
+            try
+            {
+                var psi = new ProcessStartInfo("tasklist", "/FI \"IMAGENAME eq " + imageName + "\" /FO CSV /NH")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using (var p = Process.Start(psi))
+                {
+                    string o = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(6000);
+                    return o.IndexOf(imageName, StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 优雅关闭 QQ。
+        ///
+        /// 为什么要「优雅」而不是 taskkill /F：
+        ///   QQ 的登录凭证是在退出流程里刷盘的。强杀会让它来不及保存，
+        ///   下次就得重新扫码 —— 这是「每次打开都要重新登录」的成因之一。
+        ///
+        /// 三步走：
+        ///   1) 对每个有主窗口的 QQ 进程发 WM_CLOSE（等于点右上角 ×）
+        ///   2) 最多等 10 秒让它自己走完退出流程
+        ///   3) 还赖着不动才强杀兜底
+        /// </summary>
+        public static void CloseQQGracefully()
+        {
+            // ── 第一步：礼貌关窗 ──────────────────────────────
+            foreach (string name in new[] { "QQ", "QQEX" })
+            {
+                try
+                {
+                    foreach (var p in Process.GetProcessesByName(name))
+                    {
+                        try
+                        {
+                            if (p.MainWindowHandle != IntPtr.Zero) p.CloseMainWindow();
+                        }
+                        catch { }
+                        finally { try { p.Dispose(); } catch { } }
+                    }
+                }
+                catch { }
+            }
+
+            // ── 第二步：最多等 10 秒 ──────────────────────────
+            for (int i = 0; i < 20; i++)
+            {
+                if (!AnyProcess("QQ.exe") && !AnyProcess("QQEX.exe")) break;
+                Thread.Sleep(500);
+            }
+            if (!AnyProcess("QQ.exe") && !AnyProcess("QQEX.exe"))
+            {
+                Thread.Sleep(600);
+                return;   // 干净退出了，登录态已保存
+            }
+
+            // ── 第三步：还活着 → 先发终止信号（不带 /F），再强杀 ──
             foreach (string img in new[] { "QQ.exe", "QQEX.exe" })
             {
+                try
+                {
+                    var psi = new ProcessStartInfo("taskkill", "/IM " + img + " /T")
+                    {
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    };
+                    using (var p = Process.Start(psi))
+                    {
+                        p.StandardOutput.ReadToEnd();
+                        p.StandardError.ReadToEnd();
+                        p.WaitForExit(8000);
+                    }
+                }
+                catch { }
+            }
+            Thread.Sleep(1500);
+
+            foreach (string img in new[] { "QQ.exe", "QQEX.exe" })
+            {
+                if (!AnyProcess(img)) continue;
                 try
                 {
                     var psi = new ProcessStartInfo("taskkill", "/IM " + img + " /T /F")
@@ -603,14 +684,55 @@ namespace QQChatmateLauncher
                     using (var p = Process.Start(psi))
                     {
                         p.StandardOutput.ReadToEnd();
+                        p.StandardError.ReadToEnd();
                         p.WaitForExit(8000);
                     }
                 }
                 catch { }
             }
+
             // 给系统一点时间释放进程句柄和端口
-            Thread.Sleep(1500);
+            Thread.Sleep(1200);
         }
+
+        /// <summary>兼容旧调用名。</summary>
+        public static void KillLeftoverQQ()
+        {
+            CloseQQGracefully();
+        }
+
+        /// <summary>
+        /// 取机器人自己的 QQ 号（NapCat 快速登录用它，免扫码）。
+        /// 来源优先级：环境变量 → qq-netizen\.env 的 ONEBOT_SELF_ID。
+        /// </summary>
+        public static string GetBotQQ()
+        {
+            string v = Environment.GetEnvironmentVariable("NAPCAT_QUICK_ACCOUNT");
+            if (!string.IsNullOrEmpty(v)) return v.Trim();
+
+            try
+            {
+                string envFile = Path.Combine(BotDir, ".env");
+                if (File.Exists(envFile))
+                {
+                    foreach (string raw in File.ReadAllLines(envFile))
+                    {
+                        string line = raw.Trim();
+                        if (line.StartsWith("ONEBOT_SELF_ID=", StringComparison.Ordinal))
+                        {
+                            string val = line.Substring("ONEBOT_SELF_ID=".Length).Trim().Trim('"');
+                            // 去掉可能的行内注释
+                            int hash = val.IndexOf('#');
+                            if (hash >= 0) val = val.Substring(0, hash).Trim();
+                            if (val.Length > 0) return val;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
         public static string StartLagrange()
         {
             // NapCat 版：启动 NapCat（hook QQ）
@@ -621,17 +743,38 @@ namespace QQChatmateLauncher
             string launcher = Path.Combine(napDir, @"napcat\launcher-napcat-qq.bat");
             if (!File.Exists(launcher)) return "找不到 launcher-napcat-qq.bat：" + launcher;
 
+            // ★ 已登录在线就绝对不要动 QQ。
+            //   以前每次启动都强杀 QQ 再重开，等于每次都要重新登录。
+            if (IsProtocolConnected()) return "协议端已在线，无需重启";
+
+            // ★ NapCat 活着（WebUI 6099 在听）= 它已经注入在 QQ 里，
+            //   而且 QQ 是登录状态。这时候绝对不能碰 QQ：
+            //   重启机器人只需要重启机器人，跟 QQ 无关。
+            if (IsNapCatRunning()) return "NapCat 已在运行，保留当前登录状态";
+
+            // 快速登录账号：给了就不弹二维码，直接复用上次的登录态
+            string qq = GetBotQQ();
+
+            // ⚠️ 故意不设 NAPCAT_QUICK_ACCOUNT 环境变量。
+            //   看 napcat.mjs：一旦设了这个变量，快速登录失败时它会把
+            //   二维码兜底也跳过（"a = !0" → 不调 getQRCodePicture），
+            //   结果就是卡在登录界面既没快速登录也没二维码，彻底进不去。
+            //   只用 -q 参数：失败时会正常退回二维码。
+            if (!string.IsNullOrEmpty(qq)) EnsureNapCatAutoLogin(qq);
+
             // ⚠️ NapCat 是往 QQ 进程里注入的，如果已经有 QQ 在跑，
             // 注入必然失败（或者注入到别的实例上，行为诡异）。
-            // 所以启动前先把残留的 QQ 关掉——这是首次启动失败最常见的原因。
-            KillLeftoverQQ();
+            // 所以启动前先把残留的 QQ 关掉——但要「优雅」关，保住登录凭证。
+            CloseQQGracefully();
 
             // NapCat 会拉起 QQ 并注入，需要真实 GUI（QQ 登录窗口）。
             // 这里用 start 开一个最小化窗口跑 launcher。
+            // -q <账号> = 快速登录，避免每次重新扫码。
+            string extra = string.IsNullOrEmpty(qq) ? "" : (" -q " + qq);
             try
             {
                 var psi = new ProcessStartInfo("cmd.exe",
-                    "/c start /min \"NapCat\" \"" + launcher + "\"");
+                    "/c start /min \"NapCat\" \"" + launcher + "\"" + extra);
                 psi.UseShellExecute = true;
                 psi.WorkingDirectory = napDir;
                 var p = Process.Start(psi);
@@ -639,35 +782,80 @@ namespace QQChatmateLauncher
             }
             catch (Exception e) { return "启动失败：" + e.Message; }
 
-            return "NapCat 启动中（会弹出 QQ 登录窗口，首次需扫码）";
+            if (string.IsNullOrEmpty(qq))
+                return "NapCat 启动中（会弹出 QQ 登录窗口，首次需扫码）";
+            return "NapCat 启动中（快速登录 " + qq + "，无需扫码）";
+        }
+
+        /// <summary>
+        /// 把账号写进 NapCat 的 webui.json（autoLoginAccount）。
+        /// 这样即使 -q 参数因为某种原因没传进去，WebUI 那层也会自动快速登录。
+        /// 失败不阻断启动。
+        /// </summary>
+        public static void EnsureNapCatAutoLogin(string qq)
+        {
+            try
+            {
+                string cfg = Path.Combine(BaseDir, @"napcat\napcat\config\webui.json");
+                if (!File.Exists(cfg)) return;
+                string text = File.ReadAllText(cfg, Encoding.UTF8);
+                var m = System.Text.RegularExpressions.Regex.Match(
+                    text, "\"autoLoginAccount\"\\s*:\\s*\"[^\"]*\"");
+                if (!m.Success) return;
+
+                string wanted = "\"autoLoginAccount\": \"" + qq + "\"";
+                if (m.Value == wanted) return;
+
+                string patched = text.Substring(0, m.Index) + wanted
+                               + text.Substring(m.Index + m.Length);
+                File.WriteAllText(cfg, patched, new UTF8Encoding(false));
+            }
+            catch { }
         }
         public static string StopLagrange()
         {
-            // NapCat 版：关闭 QQ（NapCat 注入在里面）和 NapCat 的 node
-            bool killed = false;
-            foreach (string img in new[] { "QQ.exe", "QQEX.exe", "node.exe" })
-            {
-                try
-                {
-                    var psi = new ProcessStartInfo("taskkill", "/IM " + img + " /T /F")
-                    {
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true
-                    };
-                    using (var p = Process.Start(psi))
-                    {
-                        string o = p.StandardOutput.ReadToEnd();
-                        p.WaitForExit(8000);
-                        if (o.IndexOf("SUCCESS", StringComparison.OrdinalIgnoreCase) >= 0) killed = true;
-                    }
-                }
-                catch { }
-            }
-            Thread.Sleep(900);
+            // NapCat 版：关闭 QQ（NapCat 注入在 QQ 进程里，QQ 一走它就走）。
+            //
+            // ★ 必须优雅关：QQ 的登录凭证在退出流程里落盘，
+            //   强杀会让下次必须重新扫码 —— 正是「每次打开都要重新登录」的根因。
+            bool was = AnyProcess("QQ.exe") || AnyProcess("QQEX.exe");
+            CloseQQGracefully();
+
+            // NapCat 的宿主进程万一成了孤儿，单独收掉
+            // （按镜像名精准匹配，不会误伤机器人的 node）
+            KillNapCatHost();
+
+            Thread.Sleep(600);
             if (TestLagrange()) return "⚠️ 协议端仍在运行（可能权限不足，请手动关闭 QQ）";
-            return killed ? "协议端已停止" : "协议端本就没在运行";
+            return was ? "协议端已停止" : "协议端本就没在运行";
+        }
+
+        /// <summary>
+        /// 结束 NapCat 自己的宿主进程（NapCatWinBootMain + 它的 node 子进程）。
+        ///
+        /// 为什么按这个名字杀：QQ 进程走了以后 NapCat 的宿主不一定跟着走，
+        /// 留着它下次注入会打架。而任务是按镜像名精准匹配的，
+        /// 绝不会误伤机器人自己的 node（那是另一个进程）。
+        /// </summary>
+        public static void KillNapCatHost()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("taskkill", "/IM NapCatWinBootMain.exe /T /F")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using (var p = Process.Start(psi))
+                {
+                    p.StandardOutput.ReadToEnd();
+                    p.StandardError.ReadToEnd();
+                    p.WaitForExit(8000);
+                }
+            }
+            catch { }
         }
         public static string StartSign()
         {
@@ -983,7 +1171,9 @@ namespace QQChatmateLauncher
             FormClosing += (s, e) =>
             {
                 if (MessageBox.Show(
-                        "关闭启动器会同时停止所有组件（机器人/协议端/TTS）。\n\n确定要退出吗？",
+                        "关闭启动器会同时停止所有组件（机器人/协议端/TTS）。\n\n"
+                        + "提示：协议端会「正常退出」QQ 以保存登录状态，\n"
+                        + "下次打开一般不需要重新扫码。\n\n确定要退出吗？",
                         "确认退出",
                         MessageBoxButtons.YesNo,
                         MessageBoxIcon.Question) == DialogResult.Yes)
@@ -1090,10 +1280,18 @@ namespace QQChatmateLauncher
                 WaitFor(() => Program.TestSignContainer(), 120000);
 
                 // 2) NapCat 协议端
-                //    它会拉起 QQ，需要真实 GUI。启动后要等 QQ 进程出现。
-                SetStatusSafe("启动 NapCat 协议端…");
-                Program.StartLagrange();
-                WaitFor(() => Program.TestLagrange(), 60000);
+                //    ★ 已经活着（6099 在听）就绝对不碰 —— 碰了就要重新扫码。
+                //    只有真没起的时候才拉起 QQ。
+                if (Program.IsNapCatRunning())
+                {
+                    SetStatusSafe("NapCat 已在运行，保留登录状态");
+                }
+                else
+                {
+                    SetStatusSafe("启动 NapCat 协议端…");
+                    Program.StartLagrange();
+                    WaitFor(() => Program.TestLagrange(), 60000);
+                }
 
                 // 3) 机器人主程序
                 SetStatusSafe("启动机器人…");
@@ -1174,6 +1372,11 @@ namespace QQChatmateLauncher
         ///
         /// 为什么是"连续 2 次"：端口探测偶有抖动（比如组件正在重启），
         /// 立刻拉起会造成重复启动。等 1 分钟确认真的挂了再动手。
+        ///
+        /// ★ 登录保护：只要 NapCat 还活着（6099 在听），就绝不去重启协议端。
+        ///   重启协议端 = 杀 QQ = 掉登录 = 要重新扫码。
+        ///   机器人自己掉了只重启机器人就行 —— 这正是「每次打开都要重新登录」
+        ///   的第二个根因（看门狗把好好的 NapCat 也一起重启了）。
         /// </summary>
         private void WatchdogTick()
         {
@@ -1182,18 +1385,25 @@ namespace QQChatmateLauncher
             bool bot = Program.TestPort(8080) && Program.TestPort(3000);
             bool tts = Program.TestPort(9880);
             bool sign = Program.TestSignContainer();
+            bool napcatAlive = Program.IsNapCatRunning();
             bool lag = Program.TestLagrange();
 
             _botDownStreak = bot ? 0 : _botDownStreak + 1;
             _ttsDownStreak = tts ? 0 : _ttsDownStreak + 1;
             _signDownStreak = sign ? 0 : _signDownStreak + 1;
-            _lagDownStreak = lag ? 0 : _lagDownStreak + 1;
+
+            // NapCat 活着就别累加"协议端挂了"的计数 —— 它只是没连上机器人。
+            // 这种情况重拉机器人就会自动重连（NapCat 的 WS 客户端会重试）。
+            if (napcatAlive)
+                _lagDownStreak = 0;
+            else
+                _lagDownStreak = lag ? 0 : _lagDownStreak + 1;
 
             // 连续 2 次（60 秒）确认挂了才动手
             const int THRESHOLD = 2;
             var toRestart = new System.Collections.Generic.List<string>();
             if (_signDownStreak >= THRESHOLD) toRestart.Add("sign");
-            if (_lagDownStreak >= THRESHOLD) toRestart.Add("lagrange");
+            if (_lagDownStreak >= THRESHOLD && !napcatAlive) toRestart.Add("lagrange");
             if (_botDownStreak >= THRESHOLD) toRestart.Add("bot");
             if (_ttsDownStreak >= THRESHOLD) toRestart.Add("tts");
 
