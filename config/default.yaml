@@ -138,7 +138,10 @@ llm:
   topP: 0.95
   maxTokens: 300               # 短回复，防长文
   timeoutMs: 30000
-  retries: 1
+  # 重试 3 次（指数退避 2s → 4s → 8s）。
+  # 原来是 1 次，网络抖一下就直接失败，用户收到的是兜底短句（"嗯""6"），
+  # 体感像"她突然变傻了"。多试几次能扛过绝大多数瞬时故障。
+  retries: 3
   retryDelayMs: 2000
   maxConcurrent: 2
   requestsPerMinute: 20

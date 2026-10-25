@@ -17,7 +17,10 @@
     "test:stickerkey": "tsx tests/sticker-key.ts",
     "test:prompt": "tsx tests/prompt.ts",
     "cost": "tsx tests/cost.ts",
-    "check:llm": "tsx tests/check-llm.ts"
+    "check:llm": "tsx tests/check-llm.ts",
+    "test:session": "tsx tests/session.ts",
+    "test:memory": "tsx tests/memory.ts",
+    "test:tts": "tsx tests/tts.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",

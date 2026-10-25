@@ -54,6 +54,8 @@ export class Session {
 
   isGenerating = false;
   private lockQueue: Array<() => void> = [];
+  /** 正在生成/发送的回复条数，优雅退出时等它归零 */
+  private inflight = 0;
   private persona: PersonaData;
   private cfg: SessionConfig;
   private store: Store;
@@ -122,11 +124,23 @@ export class Session {
   async acquireLock(): Promise<() => void> {
     if (!this.isGenerating) {
       this.isGenerating = true;
+      this.inflight++;
       return () => this.releaseLock();
     }
     // 排队
     await new Promise<void>((resolve) => this.lockQueue.push(resolve));
+    this.inflight++;
     return () => this.releaseLock();
+  }
+
+  /**
+   * 还有几条回复正在生成/发送中。
+   *
+   * 优雅退出时用：直接 process.exit 会打断正在生成的回复，
+   * 用户那边表现为"她突然不说话了"。所以要等它归零。
+   */
+  get inflightCount(): number {
+    return this.inflight;
   }
 
   /**
@@ -138,6 +152,7 @@ export class Session {
   tryAcquireLock(): boolean {
     if (this.isGenerating) return false;
     this.isGenerating = true;
+    this.inflight++;
     return true;
   }
 
@@ -147,6 +162,7 @@ export class Session {
   }
 
   private releaseLock(): void {
+    if (this.inflight > 0) this.inflight--;
     const next = this.lockQueue.shift();
     if (next) {
       next(); // isGenerating 保持 true，交给下一个

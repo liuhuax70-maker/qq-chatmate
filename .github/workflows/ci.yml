@@ -54,3 +54,12 @@ jobs:
 
       - name: Test prompt
         run: npm run test:prompt
+
+      - name: Test session
+        run: npm run test:session
+
+      - name: Test memory
+        run: npm run test:memory
+
+      - name: Test tts
+        run: npm run test:tts

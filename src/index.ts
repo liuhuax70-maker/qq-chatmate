@@ -637,9 +637,24 @@ async function main(): Promise<void> {
   // ── 优雅退出 ────────────────────────────────────────────
   const shutdown = async (signal: string) => {
     logger.info({ signal }, '正在关闭');
+
+    // 1) 先停主动开口和管线，不再接新任务
     proactive.stop();
-    session.persist(true);
     pipeline.stop();
+
+    // 2) 等在途回复发完（最多 10 秒）。
+    //    直接 process.exit 会把她正在打的字掐断，用户那边就是"说到一半人没了"。
+    const deadline = Date.now() + 10_000;
+    while (session.inflightCount > 0 && Date.now() < deadline) {
+      logger.info({ inflight: session.inflightCount }, '等待在途回复完成…');
+      await sleep(200);
+    }
+    if (session.inflightCount > 0) {
+      logger.warn({ inflight: session.inflightCount }, '等待超时，强制退出（可能有回复被截断）');
+    }
+
+    // 3) 收尾
+    session.persist(true);
     panel.dispose();
     await http.close();
     await adapter.stop();
