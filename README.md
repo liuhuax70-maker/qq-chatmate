@@ -49,7 +49,7 @@
 └─────────────────┬───────────────────────────┘
                   │ OneBot 11
 ┌─────────────────▼───────────────────────────┐
-│  Lagrange.OneBot        协议端（QQ 登录）      │
+│  NapCat QQ 9.9.33       协议端（QQ 登录）      │
 │  ntqq-sign-server       签名服务（Docker）     │
 └─────────────────┬───────────────────────────┘
                   │ reverse-websocket :8080
@@ -107,7 +107,7 @@ OWNER_QQ=你的主号QQ号
 cd ../ntqq-sign-server && docker compose up -d
 
 # ② 协议端（首次需扫码，必须双击启动）
-../lagrange/Lagrange.OneBot/bin/Release/net9.0/win-x64/publish/Lagrange.OneBot.exe
+../napcat/napcat/launcher-napcat-qq.bat
 
 # ③ 主程序
 npm run dev
@@ -134,7 +134,7 @@ curl http://127.0.0.1:3000/healthz
 - [DESIGN.md](docs/DESIGN.md) — 设计文档
 - [getting-started.md](docs/getting-started.md) — 完整搭建指南
 - [sign-server-guide.md](docs/sign-server-guide.md) — 签名服务
-- [lagrange-startup.md](docs/lagrange-startup.md) — 协议端启动与排障
+- [napcat-deployment.md](docs/napcat-deployment.md) — NapCat 部署与排障
 - [qrcode-issue.md](docs/qrcode-issue.md) — 二维码问题
 - [contact-surface.md](docs/contact-surface.md) — 接触面防护
 
@@ -171,7 +171,7 @@ DeepSeek 缓存命中后约 **0.0012 元/轮**。主动开口的分享/关心会
 
 ## 已知限制
 
-- 协议端（Lagrange）首次启动需扫码，且必须双击启动（无控制台会崩）
+- 协议端（NapCat）首次启动需扫码；它 hook QQ 进程，需要真实桌面会话
 - 语音合成在 CPU 上较慢（5-7 秒/条），只对短句低概率触发
 - 只支持私聊，不接群聊
 

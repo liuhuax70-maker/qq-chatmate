@@ -62,6 +62,23 @@ async function main(): Promise<void> {
   // ── 存储 ────────────────────────────────────────────────
   const store = new Store(cfg.memory.db.path);
 
+  // 启动时清理过期对话日志（只保留 90 天），并每 24 小时跑一次。
+  // chat_logs 只增不删的话，跑几个月会变成几十万行，占磁盘也让查询变慢。
+  // memories 表不动——那是提炼过的长期信息。
+  try {
+    const pruned = store.pruneChatLogs(90);
+    if (pruned > 0) logger.info({ rows: pruned }, '已清理 90 天前的对话日志');
+  } catch (err) {
+    logger.warn({ err: (err as Error).message }, '清理对话日志失败（不影响启动）');
+  }
+  const pruneTimer = setInterval(() => {
+    try {
+      const n = store.pruneChatLogs(90);
+      if (n > 0) logger.info({ rows: n }, '定期清理对话日志');
+    } catch { /* 忽略 */ }
+  }, 24 * 3_600_000);
+  pruneTimer.unref();
+
   // ── LLM ─────────────────────────────────────────────────
   const llm = new LLMClient(
     {
@@ -394,16 +411,25 @@ async function main(): Promise<void> {
       logger.warn('协议端未连接，跳过本次主动开口');
       return;
     }
-    const delay = post.typingDelayMs(text.length);
-    logger.info({ chars: text.length, delayMs: delay }, '主动开口：准备发送');
-    await sleep(delay);
+    // 并发保护：她正在回复你的时候别插话。
+    // 主动开口和被动回复共用同一条发送通道，同时发会出现两条消息交错的诡异现象。
+    // 这里用非阻塞取锁——拿不到就跳过这一轮，不排队（排队可能等很久）。
+    if (!session.tryAcquireLock()) {
+      logger.debug('正在回复中，跳过本次主动开口');
+      return;
+    }
     try {
+      const delay = post.typingDelayMs(text.length);
+      logger.info({ chars: text.length, delayMs: delay }, '主动开口：准备发送');
+      await sleep(delay);
       for (const seg of post.split(text)) {
         await adapter.sendPrivateMessageSegments(peerId, post.toSegments(seg));
         await sleep(post.segmentPauseMs());
       }
     } catch (err) {
       logger.warn({ err: (err as Error).message }, '主动开口发送失败（已忽略，不影响运行）');
+    } finally {
+      session.releaseLockPublic();
     }
   });
   proactive.start();

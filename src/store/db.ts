@@ -176,6 +176,21 @@ export class Store {
     return rows.reverse().map((r) => ({ role: r.role, content: r.content, at: r.created_at }));
   }
 
+  /**
+   * 清理过期的对话日志。
+   *
+   * 问题：chat_logs 只增不删，跑几个月就是几十万行，
+   * 不仅占磁盘，recentChats 的索引也会变慢。
+   *
+   * 策略：只保留最近 retentionDays 天。启动时和每 24 小时各跑一次。
+   * 记忆表（memories）不动——那是提炼过的长期信息，才是真正要留的。
+   */
+  pruneChatLogs(retentionDays = 90): number {
+    const cutoff = Date.now() - retentionDays * 86_400_000;
+    const info = this.db.prepare('DELETE FROM chat_logs WHERE created_at < ?').run(cutoff);
+    return info.changes;
+  }
+
   // ── 记忆 ────────────────────────────────────────────────
 
   addMemory(m: { scope: string; scopeId: string; type: MemoryType; content: string; importance: number }): void {

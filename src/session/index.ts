@@ -129,6 +129,23 @@ export class Session {
     return () => this.releaseLock();
   }
 
+  /**
+   * 非阻塞取锁：拿不到就立刻返回 false。
+   *
+   * 给「主动开口」用——她正在回复你的时候不该插话，
+   * 但主动开口也不该排队等你回完（可能等很久），直接跳过这一轮就好。
+   */
+  tryAcquireLock(): boolean {
+    if (this.isGenerating) return false;
+    this.isGenerating = true;
+    return true;
+  }
+
+  /** 释放非阻塞锁（配套 tryAcquireLock） */
+  releaseLockPublic(): void {
+    this.releaseLock();
+  }
+
   private releaseLock(): void {
     const next = this.lockQueue.shift();
     if (next) {
