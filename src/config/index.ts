@@ -166,8 +166,16 @@ const ConfigSchema = z.object({
       minChars: z.number().default(6),
       /** 值不值得记，判定用的温度（低=稳定） */
       judgeTemperature: z.number().default(0.1),
-      /** 单条日记最多多少字 */
-      maxEntryChars: z.number().default(180),
+      /** 单个段落的字数上限 */
+      maxSectionChars: z.number().default(120),
+      /** 天气（日记头部第一行要写「晴」这种真实天气，不能瞎编） */
+      weather: z
+        .object({
+          /** 城市名（支持中文）。空 = 按 IP 定位 */
+          city: z.string().default(''),
+          timeoutMs: z.number().default(8000),
+        })
+        .default({}),
     })
     .default({}),
 

@@ -194,7 +194,10 @@ async function main(): Promise<void> {
   // 全程异步，写失败也绝不影响对话。
   const diary = new Diary(cfg.diary, llm, logger);
   if (cfg.diary.enabled) {
-    logger.info({ dir: cfg.diary.dir }, '日记已启用');
+    logger.info(
+      { dir: cfg.diary.dir, weatherCity: cfg.diary.weather.city || '(IP 定位)' },
+      '日记已启用',
+    );
   }
 
   // ── 管线 ────────────────────────────────────────────────

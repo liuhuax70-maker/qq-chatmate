@@ -1824,6 +1824,8 @@ namespace QQChatmateLauncher
         // ── 可编辑：日记 ──────────────────────────────────
         private CheckBox _diaryEnabled;
         private TextBox _diaryDir;
+        /// <summary>天气城市。日记第一行要写「晴/多云/小雨」这种真实天气，不能瞎编。</summary>
+        private TextBox _weatherCity;
         private Label _diaryPreview;
 
         // ── 只展示 ────────────────────────────────────────
@@ -2007,6 +2009,20 @@ namespace QQChatmateLauncher
             page.Controls.Add(hint);
             y += 52;
 
+            // 天气城市：日记第一行要写「晴」这种真实天气
+            AddLabel(page, "天气城市", 16, y);
+            _weatherCity = AddText(page, 100, y, 300);
+            var wHint = new Label
+            {
+                Text = "日记第一行会写「晴/多云/小雨」这种真实天气。留空 = 按 IP 定位。",
+                ForeColor = Color.FromArgb(100, 116, 139),
+                Location = new Point(100, y + 28),
+                Size = new Size(520, 20),
+                Font = new Font("Microsoft YaHei UI", 8f)
+            };
+            page.Controls.Add(wHint);
+            y += 56;
+
             _diaryPreview = new Label
             {
                 Text = "",
@@ -2030,7 +2046,7 @@ namespace QQChatmateLauncher
             {
                 Text = "写什么：你说自己事的时候，有情绪、有分量的那种。"
                      + "\n不写什么：寒暄、问句、指令、无意义的吐槽。"
-                     + "\n（每条会先判断值不值得记，值得才写入文件）",
+                     + "\n格式：日期/星期/天气 → 地点 → 心情 → 标题 → 开头/正文一/正文二/正文三/结尾",
                 ForeColor = MutedColor,
                 Location = new Point(16, y),
                 Size = new Size(620, 70)
@@ -2192,6 +2208,7 @@ namespace QQChatmateLauncher
         {
             string dir = "";
             bool enabled = true;
+            string weatherCity = "";
 
             foreach (string file in new[] { LocalConfigPath, ConfigPath })
             {
@@ -2200,8 +2217,11 @@ namespace QQChatmateLauncher
                 {
                     string[] lines = File.ReadAllLines(file, Encoding.UTF8);
                     bool inDiary = false;
+                    bool inWeather = false;
+                    int weatherIndent = -1;
                     bool foundHere = false;
                     string dirHere = "";
+                    string cityHere = "";
                     bool enabledHere = true;
 
                     foreach (string raw in lines)
@@ -2217,6 +2237,32 @@ namespace QQChatmateLauncher
                         if (trimmed.Length > 0 && raw.Length - trimmed.Length == 0) break;
                         if (trimmed.Length == 0) continue;
 
+                        int ind = raw.Length - trimmed.Length;
+
+                        // weather 子块
+                        if (inWeather)
+                        {
+                            if (ind <= weatherIndent && !trimmed.StartsWith("city:"))
+                            {
+                                inWeather = false;   // 出了 weather 块
+                            }
+                            else
+                            {
+                                if (trimmed.StartsWith("city:"))
+                                {
+                                    cityHere = ValueOf(trimmed, "city:").Trim('"', '\'', ' ');
+                                    foundHere = true;
+                                }
+                                continue;
+                            }
+                        }
+
+                        if (trimmed.StartsWith("weather:"))
+                        {
+                            inWeather = true;
+                            weatherIndent = ind;
+                            continue;
+                        }
                         if (trimmed.StartsWith("enabled:"))
                         {
                             enabledHere = trimmed.IndexOf("false", StringComparison.OrdinalIgnoreCase) < 0;
@@ -2235,6 +2281,7 @@ namespace QQChatmateLauncher
                     {
                         dir = dirHere;
                         enabled = enabledHere;
+                        weatherCity = cityHere;
                         break;
                     }
                 }
@@ -2244,6 +2291,7 @@ namespace QQChatmateLauncher
             if (dir.Length == 0) dir = @"D:\日记";
             _diaryDir.Text = dir;
             _diaryEnabled.Checked = enabled;
+            _weatherCity.Text = weatherCity;
             UpdateDiaryPreview();
         }
 
@@ -2522,6 +2570,7 @@ namespace QQChatmateLauncher
         private void SaveDiaryConfig()
         {
             string dir = _diaryDir.Text.Trim();
+            string city = _weatherCity.Text.Trim();
 
             var sb = new StringBuilder();
             sb.AppendLine("# 本文件含本机配置，不入 git（见 .gitignore）");
@@ -2531,6 +2580,8 @@ namespace QQChatmateLauncher
             sb.AppendLine("  enabled: " + (_diaryEnabled.Checked ? "true" : "false"));
             // 路径里的反斜杠在 YAML 双引号里要转义
             sb.AppendLine("  dir: \"" + dir.Replace("\\", "\\\\") + "\"");
+            sb.AppendLine("  weather:");
+            sb.AppendLine("    city: \"" + city.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"");
 
             File.WriteAllText(LocalConfigPath, sb.ToString(), new UTF8Encoding(false));
         }
