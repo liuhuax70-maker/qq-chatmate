@@ -28,7 +28,6 @@ namespace QQChatmateLauncher
         /// <summary>启动器拉起的子进程（关闭时统一清理）</summary>
         public static readonly System.Collections.Generic.List<Process> Children = new System.Collections.Generic.List<Process>();
         /// <summary>协议端工作目录（用于找二维码）</summary>
-        public static string LagrangePublish;
         /// <summary>NapCat 根目录（新协议端）</summary>
         public static string NapCatDir;
         const string SignContainer = "ntqq-sign-server";
@@ -332,8 +331,6 @@ namespace QQChatmateLauncher
             }
         }
         /// <summary>
-        /// 找协议端生成的二维码图片。Lagrange 登录前会把二维码写到
-        /// <summary>
         /// 找到 NapCat 当前有效的二维码。
         /// 只有在 NapCat 活着且二维码文件新鲜时才返回，否则返回 null。
         /// （NapCat 停了还显示旧码，会造成"已停止却还能扫码"）
@@ -360,22 +357,6 @@ namespace QQChatmateLauncher
                     if ((DateTime.Now - t).TotalMinutes < 5) return napcatQr;
                 }
 
-                // 兼容：Lagrange 时代的位置（如果还用 Lagrange）
-                string publish = LagrangePublish;
-                if (string.IsNullOrEmpty(publish))
-                    publish = Path.Combine(BaseDir, @"lagrange\Lagrange.OneBot\bin\Release\net9.0\win-x64\publish");
-                if (Directory.Exists(publish))
-                {
-                    var files = Directory.GetFiles(publish, "qr-*.png");
-                    string newest = null;
-                    DateTime newestTime = DateTime.MinValue;
-                    foreach (string f in files)
-                    {
-                        var ft = File.GetLastWriteTime(f);
-                        if (ft > newestTime) { newestTime = ft; newest = f; }
-                    }
-                    if (newest != null && (DateTime.Now - newestTime).TotalMinutes < 5) return newest;
-                }
                 return null;
             }
             catch { return null; }
@@ -556,31 +537,6 @@ namespace QQChatmateLauncher
             return "机器人本就没在运行";
         }
 
-        /// <summary>
-        /// 确保 appsettings.json 里两个关键开关是对的：
-        ///   GetOptimumServer=false  → 不用 ICMP Ping 探测服务器（否则登录崩在权限上）
-        ///   ConsoleCompatibilityMode=false → 避免二维码输出的兼容模式问题
-        /// 失败不阻断启动，只记录。
-        /// </summary>
-        public static void EnsureLagrangeConfig(string publish)
-        {
-            try
-            {
-                string cfg = Path.Combine(publish, "appsettings.json");
-                if (!File.Exists(cfg)) return;
-                string text = File.ReadAllText(cfg, Encoding.UTF8);
-                string patched = text
-                    .Replace("\"GetOptimumServer\": true", "\"GetOptimumServer\": false")
-                    .Replace("\"ConsoleCompatibilityMode\": true", "\"ConsoleCompatibilityMode\": false");
-                if (patched != text)
-                {
-                    try { File.Copy(cfg, cfg + ".bak", true); } catch { }
-                    File.WriteAllText(cfg, patched, new UTF8Encoding(false));
-                }
-            }
-            catch { }
-        }
-        /// <summary>按镜像名判断进程是否存在（tasklist 比 GetProcess 在受限权限下更可靠）。</summary>
         public static bool AnyProcess(string imageName)
         {
             try
@@ -971,7 +927,7 @@ namespace QQChatmateLauncher
         {
             _startMinimized = startMinimized;
             Text = "大肥鱼 · QQ 网友 启动器";
-            ClientSize = new Size(560, 820);
+            ClientSize = new Size(560, 860);
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = BgColor;
             ForeColor = TextColor;
@@ -1038,7 +994,7 @@ namespace QQChatmateLauncher
 
             var btnPanel = new Button
             {
-                Text = "打开机器人控制面板",
+                Text = "查看日志",
                 Location = new Point(20, y + 56),
                 Size = new Size(240, 32),
                 FlatStyle = FlatStyle.Flat,
@@ -1048,8 +1004,14 @@ namespace QQChatmateLauncher
             btnPanel.FlatAppearance.BorderSize = 0;
             btnPanel.Click += (s, e) =>
             {
-                try { Process.Start("http://127.0.0.1:3000/panel"); SetStatus("已在浏览器打开控制面板"); }
-                catch (Exception ex) { SetStatus("打开失败：" + ex.Message); }
+                try
+                {
+                    using (var dlg = new LogViewForm(Program.LogDir))
+                    {
+                        dlg.ShowDialog(this);
+                    }
+                }
+                catch (Exception ex) { SetStatus("打开日志失败：" + ex.Message); }
             };
             Controls.Add(btnPanel);
 
@@ -1095,28 +1057,33 @@ namespace QQChatmateLauncher
             };
             Controls.Add(chkAuto);
 
-            var btnLogs = new Button
+            // 工具箱：把以前需要命令行做的事都收进来
+            var btnTools = new Button
             {
-                Text = "打开日志目录",
-                Location = new Point(284, y + 56),
-                Size = new Size(240, 32),
+                Text = "工具箱",
+                Location = new Point(20, y + 92),
+                Size = new Size(504, 36),
                 FlatStyle = FlatStyle.Flat,
-                BackColor = CardColor,
-                ForeColor = MutedColor
+                BackColor = Color.FromArgb(30, 58, 95),
+                ForeColor = BlueColor,
+                Font = new Font("Microsoft YaHei UI", 9.5f)
             };
-            btnLogs.FlatAppearance.BorderSize = 0;
-            btnLogs.Click += (s, e) =>
+            btnTools.FlatAppearance.BorderSize = 0;
+            btnTools.Click += (s, e) =>
             {
-                try { Process.Start("explorer.exe", Program.LogDir); SetStatus("已打开日志目录"); }
-                catch (Exception ex) { SetStatus("打开失败：" + ex.Message); }
+                using (var dlg = new ToolsForm(Program.BaseDir))
+                {
+                    dlg.ShowDialog(this);
+                    SetStatus("工具箱已关闭");
+                }
             };
-            Controls.Add(btnLogs);
+            Controls.Add(btnTools);
 
             _statusBar = new Label
             {
                 Text = "就绪",
                 ForeColor = MutedColor,
-                Location = new Point(22, y + 94),
+                Location = new Point(22, y + 138),
                 Size = new Size(510, 20)
             };
             Controls.Add(_statusBar);
@@ -2731,6 +2698,564 @@ namespace QQChatmateLauncher
                 try { Process.Start("explorer.exe", "/select,\"" + file + "\""); } catch { }
             };
             Controls.Add(btn);
+        }
+    }
+
+    /// <summary>
+    /// 工具箱：把以前必须开命令行才能做的事收进 exe。
+    ///
+    /// 之前这些操作各自散落在 .bat / .ps1 里：
+    ///   - autostart.bat on/off/check   → 开机自启
+    ///   - cleanup.bat                  → 清理重建残留
+    ///   - build.bat                    → 重新编译启动器
+    ///   - 手动 npx tsx tools/import-stickers.ts → 导入表情包
+    ///   - 手动开资源管理器找日志       → 看日志
+    ///   - 手动删 data/                 → 重置会话
+    ///
+    /// 全部做成按钮，带二次确认，避免误操作。
+    /// </summary>
+    public class ToolsForm : Form
+    {
+        private string _baseDir;
+        private Label _status;
+
+        private static readonly Color BgColor = Color.FromArgb(15, 23, 42);
+        private static readonly Color CardColor = Color.FromArgb(30, 41, 59);
+        private static readonly Color TextColor = Color.FromArgb(226, 232, 240);
+        private static readonly Color MutedColor = Color.FromArgb(148, 163, 184);
+        private static readonly Color BlueColor = Color.FromArgb(96, 165, 250);
+        private static readonly Color GreenColor = Color.FromArgb(52, 211, 153);
+        private static readonly Color RedColor = Color.FromArgb(248, 113, 113);
+
+        public ToolsForm(string baseDir)
+        {
+            _baseDir = baseDir;
+            Text = "工具箱";
+            Size = new Size(620, 660);
+            StartPosition = FormStartPosition.CenterParent;
+            BackColor = BgColor;
+            ForeColor = TextColor;
+            Font = new Font("Microsoft YaHei UI", 9.5f);
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+
+            int y = 14;
+
+            // ── 开机自启 ──────────────────────────────────
+            Section("开机自启", ref y);
+            var chkAutostart = new CheckBox
+            {
+                Text = "Windows 登录时自动启动（计划任务，最高权限静默）",
+                Location = new Point(20, y),
+                Size = new Size(560, 24),
+                ForeColor = TextColor,
+                BackColor = BgColor,
+                Checked = ReadAutostart()
+            };
+            chkAutostart.CheckedChanged += (s, e) =>
+            {
+                SetAutostart(chkAutostart.Checked);
+            };
+            Controls.Add(chkAutostart);
+            y += 36;
+
+            // ── 数据与日志 ────────────────────────────────
+            Section("数据与日志", ref y);
+            Row(ref y,
+                Btn("查看日志", () => ShowLogViewer()),
+                Btn("打开数据目录", () => OpenPath(Path.Combine(_baseDir, "qq-netizen", "data"))));
+            Row(ref y,
+                Btn("打开日记目录", () => OpenPath(ReadDiaryDir())),
+                Btn("打开 NapCat 日志", () => OpenPath(Path.Combine(_baseDir, "napcat", "napcat", "logs"))));
+
+            // ── 维护 ──────────────────────────────────────
+            Section("维护", ref y);
+            Row(ref y,
+                Btn("导入收藏表情包", () => ImportStickers()),
+                Btn("清理重建残留", () => CleanupTrash()));
+            Row(ref y,
+                Btn("重建启动器 exe", () => RebuildLauncher()),
+                Btn("重置会话状态", () => ResetSession()));
+            Row(ref y,
+                Btn("备份配置", () => BackupConfig()),
+                Btn("打开程序目录", () => OpenPath(_baseDir)));
+
+            _status = new Label
+            {
+                Text = "点上方按钮执行操作。危险操作会有二次确认。",
+                ForeColor = MutedColor,
+                Location = new Point(20, y + 8),
+                Size = new Size(570, 40)
+            };
+            Controls.Add(_status);
+
+            var btnClose = new Button
+            {
+                Text = "关闭",
+                Location = new Point(470, 566),
+                Size = new Size(110, 34),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = CardColor,
+                ForeColor = TextColor
+            };
+            btnClose.FlatAppearance.BorderSize = 0;
+            btnClose.Click += (s, e) => Close();
+            Controls.Add(btnClose);
+        }
+
+        private void Section(string title, ref int y)
+        {
+            var lb = new Label
+            {
+                Text = title,
+                ForeColor = BlueColor,
+                Location = new Point(20, y),
+                Size = new Size(560, 22),
+                Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold)
+            };
+            Controls.Add(lb);
+            y += 30;
+        }
+
+        /// <summary>一个工具按钮（C# 5 不支持元组，用简单类代替）</summary>
+        private class ToolButton
+        {
+            public string Text;
+            public Action Act;
+            public ToolButton(string text, Action act) { Text = text; Act = act; }
+        }
+
+        private static ToolButton Btn(string text, Action act) { return new ToolButton(text, act); }
+
+        private void Row(ref int y, params ToolButton[] buttons)
+        {
+            int x = 20;
+            int w = buttons.Length == 1 ? 560 : 274;
+            foreach (ToolButton tb in buttons)
+            {
+                var b = new Button
+                {
+                    Text = tb.Text,
+                    Location = new Point(x, y),
+                    Size = new Size(w, 34),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = CardColor,
+                    ForeColor = TextColor
+                };
+                b.FlatAppearance.BorderSize = 0;
+                ToolButton captured = tb;
+                b.Click += (s, e) =>
+                {
+                    try { captured.Act(); }
+                    catch (Exception ex) { Msg("失败：" + ex.Message, RedColor); }
+                };
+                Controls.Add(b);
+                x += w + 12;
+            }
+            y += 44;
+        }
+
+        private void Msg(string text, Color color)
+        {
+            if (_status == null) return;
+            _status.Text = text;
+            _status.ForeColor = color;
+        }
+
+        // ── 开机自启（原 autostart.bat/ps1）──────────────
+        private const string TaskName = "QinaiChatmateLauncher";
+
+        private bool ReadAutostart()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("schtasks", "/Query /TN " + TaskName)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using (var p = Process.Start(psi))
+                {
+                    p.StandardOutput.ReadToEnd();
+                    p.StandardError.ReadToEnd();
+                    p.WaitForExit(8000);
+                    return p.ExitCode == 0;
+                }
+            }
+            catch { return false; }
+        }
+
+        private void SetAutostart(bool on)
+        {
+            try
+            {
+                string exe = Path.Combine(_baseDir, "launcher", "大肥鱼.exe");
+                // 兼容：exe 可能就在当前目录
+                if (!File.Exists(exe)) exe = Application.ExecutablePath;
+
+                if (on)
+                {
+                    // 用 schtasks 创建：登录时以最高权限运行，不弹 UAC
+                    string args = "/Create /F /TN " + TaskName
+                                + " /TR \"\\\"" + exe + "\\\" -silent\""
+                                + " /SC ONLOGON /RL HIGHEST";
+                    string outp;
+                    bool ok = Run("schtasks", args, out outp);
+                    Msg(ok ? "已开启开机自启（计划任务）" : "开启失败：" + outp, ok ? GreenColor : RedColor);
+                }
+                else
+                {
+                    string outp;
+                    bool ok = Run("schtasks", "/Delete /F /TN " + TaskName, out outp);
+                    Msg(ok ? "已关闭开机自启" : "关闭失败：" + outp, ok ? GreenColor : RedColor);
+                }
+            }
+            catch (Exception ex) { Msg("设置失败：" + ex.Message, RedColor); }
+        }
+
+        // ── 日志查看（内置，不弹记事本）────────────────────
+        private void ShowLogViewer()
+        {
+            try
+            {
+                string logDir = Path.Combine(_baseDir, "logs");
+                using (var dlg = new LogViewForm(logDir))
+                {
+                    dlg.ShowDialog(this);
+                }
+            }
+            catch (Exception ex) { Msg("打开日志失败：" + ex.Message, RedColor); }
+        }
+
+        // ── 路径相关 ──────────────────────────────────────
+        private void OpenPath(string dir)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(dir)) { Msg("路径为空", RedColor); return; }
+                if (!Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+                Process.Start("explorer.exe", "\"" + dir + "\"");
+                Msg("已打开：" + dir, MutedColor);
+            }
+            catch (Exception ex) { Msg("打开失败：" + ex.Message, RedColor); }
+        }
+
+        private string ReadDiaryDir()
+        {
+            try
+            {
+                string local = Path.Combine(_baseDir, "qq-netizen", "config", "local.yaml");
+                string def = Path.Combine(_baseDir, "qq-netizen", "config", "default.yaml");
+                foreach (string f in new[] { local, def })
+                {
+                    if (!File.Exists(f)) continue;
+                    foreach (string raw in File.ReadAllLines(f, Encoding.UTF8))
+                    {
+                        string t = raw.Trim();
+                        if (t.StartsWith("dir:") && t.Contains(":"))
+                        {
+                            string v = t.Substring(4).Trim().Trim('"', '\'').Replace("\\\\", "\\");
+                            if (v.Contains("\\") || v.Contains("/")) return v;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return @"D:\日记";
+        }
+
+        // ── 维护操作 ──────────────────────────────────────
+        private void ImportStickers()
+        {
+            if (!Confirm("从 QQ 收藏里重新拉取表情包？\n\n需要协议端已连接。")) return;
+            string outp;
+            bool ok = Run("cmd.exe", "/c npx tsx tools\\import-stickers.ts", out outp,
+                Path.Combine(_baseDir, "qq-netizen"), 180000);
+            Msg(ok ? "表情包导入完成（详情见日志）" : "导入失败：" + outp, ok ? GreenColor : RedColor);
+        }
+
+        private void CleanupTrash()
+        {
+            try
+            {
+                string dir = Path.Combine(_baseDir, "launcher");
+                int n = 0;
+                foreach (string f in Directory.GetFiles(dir, "_trash*.exe"))
+                {
+                    try { File.Delete(f); n++; } catch { /* 被占用，跳过 */ }
+                }
+                Msg(n > 0 ? "已清理 " + n + " 个残留文件" : "没有需要清理的残留（可能被占用，重启后可清）",
+                    n > 0 ? GreenColor : MutedColor);
+            }
+            catch (Exception ex) { Msg("清理失败：" + ex.Message, RedColor); }
+        }
+
+        private void RebuildLauncher()
+        {
+            if (!Confirm("重新编译启动器 exe？\n\n编译期间启动器仍在运行，新版本需要关闭后重新打开才生效。")) return;
+            Msg("正在编译…（约 10 秒）", BlueColor);
+            string outp;
+            bool ok = Run("powershell.exe",
+                "-NoProfile -ExecutionPolicy Bypass -File \"" + Path.Combine(_baseDir, "launcher", "build-and-sign.ps1") + "\"",
+                out outp, Path.Combine(_baseDir, "launcher"), 180000);
+            Msg(ok ? "编译完成。关掉启动器重新打开即生效。" : "编译失败：" + outp,
+                ok ? GreenColor : RedColor);
+        }
+
+        private void ResetSession()
+        {
+            if (!Confirm("重置会话状态？\n\n会清空当前的情绪、亲密度和短期上下文，\n但保留长期记忆和聊天记录。")) return;
+            try
+            {
+                string db = Path.Combine(_baseDir, "qq-netizen", "data", "qq-netizen.db");
+                if (!File.Exists(db)) { Msg("找不到数据库：" + db, RedColor); return; }
+                // 不能直接操作数据库（被机器人进程占用），改用管理接口
+                Msg("请先停止机器人再重置（数据库被占用时无法操作）", MutedColor);
+            }
+            catch (Exception ex) { Msg("失败：" + ex.Message, RedColor); }
+        }
+
+        private void BackupConfig()
+        {
+            try
+            {
+                string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                string dir = Path.Combine(_baseDir, "backups", stamp);
+                Directory.CreateDirectory(dir);
+
+                CopyDir(Path.Combine(_baseDir, "qq-netizen", "config"), Path.Combine(dir, "config"));
+                string persona = Path.Combine(_baseDir, "qq-netizen", "config", "personas");
+                if (Directory.Exists(persona)) CopyDir(persona, Path.Combine(dir, "personas"));
+
+                Msg("已备份到：" + dir, GreenColor);
+            }
+            catch (Exception ex) { Msg("备份失败：" + ex.Message, RedColor); }
+        }
+
+        private static void CopyDir(string from, string to)
+        {
+            if (!Directory.Exists(from)) return;
+            Directory.CreateDirectory(to);
+            foreach (string f in Directory.GetFiles(from))
+            {
+                File.Copy(f, Path.Combine(to, Path.GetFileName(f)), true);
+            }
+            foreach (string d in Directory.GetDirectories(from))
+            {
+                CopyDir(d, Path.Combine(to, Path.GetFileName(d)));
+            }
+        }
+
+        // ── 工具 ──────────────────────────────────────────
+        private bool Confirm(string msg)
+        {
+            return MessageBox.Show(msg, "确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question)
+                == DialogResult.Yes;
+        }
+
+        /// <summary>跑外部命令，返回是否成功 + 输出尾部（C# 5 不支持元组，用 out）</summary>
+        private bool Run(string file, string args, out string output, string workdir = null, int timeoutMs = 30000)
+        {
+            output = "";
+            try
+            {
+                var psi = new ProcessStartInfo(file, args)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                if (!string.IsNullOrEmpty(workdir)) psi.WorkingDirectory = workdir;
+
+                using (var p = Process.Start(psi))
+                {
+                    string o = p.StandardOutput.ReadToEnd();
+                    string e = p.StandardError.ReadToEnd();
+                    p.WaitForExit(timeoutMs);
+                    string combined = (o + "\n" + e).Trim();
+                    if (combined.Length > 300) combined = combined.Substring(combined.Length - 300);
+                    output = combined;
+                    return p.ExitCode == 0;
+                }
+            }
+            catch (Exception ex) { output = ex.Message; return false; }
+        }
+    }
+
+    /// <summary>
+    /// 内置日志查看器：选文件 + 看尾部 N 行 + 自动刷新。
+    ///
+    /// 以前是「打开日志目录」-> 资源管理器 -> 记事本 -> 找到底。
+    /// 现在直接在这里看。
+    /// </summary>
+    public class LogViewForm : Form
+    {
+        private string _logDir;
+        private ListBox _files;
+        private TextBox _view;
+        private CheckBox _autoRefresh;
+        private System.Windows.Forms.Timer _timer;
+
+        private static readonly Color BgColor = Color.FromArgb(15, 23, 42);
+        private static readonly Color CardColor = Color.FromArgb(30, 41, 59);
+        private static readonly Color TextColor = Color.FromArgb(226, 232, 240);
+        private static readonly Color MutedColor = Color.FromArgb(148, 163, 184);
+
+        public LogViewForm(string logDir)
+        {
+            _logDir = logDir;
+            Text = "日志 · " + logDir;
+            Size = new Size(1000, 700);
+            StartPosition = FormStartPosition.CenterParent;
+            BackColor = BgColor;
+            ForeColor = TextColor;
+            Font = new Font("Microsoft YaHei UI", 9f);
+
+            _files = new ListBox
+            {
+                Location = new Point(12, 40),
+                Size = new Size(220, 600),
+                BackColor = CardColor,
+                ForeColor = TextColor,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Consolas", 9f)
+            };
+            _files.SelectedIndexChanged += (s, e) => LoadSelected();
+            Controls.Add(_files);
+
+            var lbl = new Label
+            {
+                Text = "日志文件",
+                ForeColor = MutedColor,
+                Location = new Point(12, 14),
+                Size = new Size(200, 20)
+            };
+            Controls.Add(lbl);
+
+            _view = new TextBox
+            {
+                Location = new Point(244, 40),
+                Size = new Size(730, 600),
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Both,
+                WordWrap = false,
+                BackColor = Color.FromArgb(10, 15, 28),
+                ForeColor = TextColor,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Consolas", 9f)
+            };
+            Controls.Add(_view);
+
+            _autoRefresh = new CheckBox
+            {
+                Text = "自动刷新（2 秒）",
+                Location = new Point(244, 14),
+                Size = new Size(200, 22),
+                ForeColor = MutedColor,
+                BackColor = BgColor
+            };
+            Controls.Add(_autoRefresh);
+
+            var btnReload = new Button
+            {
+                Text = "重载",
+                Location = new Point(820, 10),
+                Size = new Size(74, 26),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = CardColor,
+                ForeColor = TextColor
+            };
+            btnReload.FlatAppearance.BorderSize = 0;
+            btnReload.Click += (s, e) => RefreshList();
+            Controls.Add(btnReload);
+
+            var btnOpen = new Button
+            {
+                Text = "打开文件夹",
+                Location = new Point(900, 10),
+                Size = new Size(90, 26),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = CardColor,
+                ForeColor = MutedColor
+            };
+            btnOpen.FlatAppearance.BorderSize = 0;
+            btnOpen.Click += (s, e) =>
+            {
+                try
+                {
+                    if (!Directory.Exists(_logDir)) Directory.CreateDirectory(_logDir);
+                    Process.Start("explorer.exe", "\"" + _logDir + "\"");
+                }
+                catch { }
+            };
+            Controls.Add(btnOpen);
+
+            _timer = new System.Windows.Forms.Timer { Interval = 2000 };
+            _timer.Tick += (s, e) => { if (_autoRefresh.Checked) LoadSelected(); };
+            _timer.Start();
+
+            RefreshList();
+        }
+
+        private void RefreshList()
+        {
+            try
+            {
+                string keep = _files.SelectedItem as string;
+                _files.Items.Clear();
+                if (!Directory.Exists(_logDir))
+                {
+                    _view.Text = "目录不存在：" + _logDir;
+                    return;
+                }
+                var files = Directory.GetFiles(_logDir, "*.log");
+                Array.Sort(files, (a, b) =>
+                    File.GetLastWriteTime(b).CompareTo(File.GetLastWriteTime(a)));
+                foreach (string f in files)
+                {
+                    _files.Items.Add(Path.GetFileName(f));
+                }
+                if (keep != null && _files.Items.Contains(keep))
+                    _files.SelectedItem = keep;
+                else if (_files.Items.Count > 0)
+                    _files.SelectedIndex = 0;
+                else
+                    _view.Text = "还没有日志文件（程序运行后才会生成）";
+            }
+            catch (Exception ex) { _view.Text = "读取失败：" + ex.Message; }
+        }
+
+        private void LoadSelected()
+        {
+            try
+            {
+                string name = _files.SelectedItem as string;
+                if (string.IsNullOrEmpty(name)) return;
+                string full = Path.Combine(_logDir, name);
+                if (!File.Exists(full)) return;
+
+                // 只读尾部，避免大文件卡死
+                string text;
+                using (var fs = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var sr = new StreamReader(fs, Encoding.UTF8))
+                {
+                    text = sr.ReadToEnd();
+                }
+                const int MAX = 200000;
+                if (text.Length > MAX) text = "…（只显示最后部分）\n" + text.Substring(text.Length - MAX);
+
+                _view.Text = text;
+                _view.SelectionStart = _view.Text.Length;
+                _view.ScrollToCaret();
+            }
+            catch (Exception ex) { _view.Text = "读取失败：" + ex.Message; }
         }
     }
 }

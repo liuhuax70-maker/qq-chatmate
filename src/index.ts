@@ -17,7 +17,6 @@ import { StickerLearner, buildAskQuestion } from './responder/sticker-learner';
 import { TtsClient, type VoiceConfig } from './tts';
 import { Store } from './store/db';
 import { startHttpServer } from './server/http';
-import { ControlPanel } from './server/panel';
 import { ProactiveScheduler } from './proactive';
 import { Diary } from './diary';
 
@@ -844,29 +843,6 @@ async function main(): Promise<void> {
     })
     .catch(() => void 0);
 
-  // ── 控制面板 ────────────────────────────────────────────
-  const panel = new ControlPanel(
-    {
-      tts: {
-        python: cfg.control.tts.python,
-        script: cfg.control.tts.script,
-        workdir: cfg.control.tts.workdir,
-        port: cfg.control.tts.port,
-      },
-      lagrange: {
-        exe: cfg.control.lagrange.exe,
-        workdir: cfg.control.lagrange.workdir,
-        bundleExtractBase: cfg.control.lagrange.bundleExtractBase,
-      },
-      signServer: {
-        container: cfg.control.signServer.container,
-        port: cfg.control.signServer.port,
-      },
-    },
-    logger,
-  );
-
-  // ── 管理接口 ────────────────────────────────────────────
   const http = await startHttpServer(
     { host: cfg.infra.server.host, port: cfg.infra.server.port, authToken: cfg.infra.server.authToken },
     {
@@ -886,7 +862,6 @@ async function main(): Promise<void> {
         readToday: () => diary.readToday(),
         list: () => diary.list(),
       },
-      panel,
     },
     logger,
   );
@@ -917,7 +892,6 @@ async function main(): Promise<void> {
 
     // 3) 收尾
     session.persist(true);
-    panel.dispose();
     await http.close();
     await adapter.stop();
     store.close();

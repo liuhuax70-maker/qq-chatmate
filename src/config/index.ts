@@ -338,33 +338,6 @@ const ConfigSchema = z.object({
     server: z.object({ host: z.string().default('127.0.0.1'), port: z.number().default(3000), authToken: z.string().optional() }).default({}),
     metrics: z.object({ enabled: z.boolean().default(true) }).default({}),
   }),
-
-  // 控制面板：监控 + 启停各组件
-  control: z
-    .object({
-      tts: z
-        .object({
-          python: z.string().default(''),
-          script: z.string().default(''),
-          workdir: z.string().default(''),
-          port: z.number().default(9880),
-        })
-        .default({}),
-      lagrange: z
-        .object({
-          exe: z.string().default(''),
-          workdir: z.string().default(''),
-          bundleExtractBase: z.string().optional(),
-        })
-        .default({}),
-      signServer: z
-        .object({
-          container: z.string().default('ntqq-sign-server'),
-          port: z.number().default(8090),
-        })
-        .default({}),
-    })
-    .default({}),
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;

@@ -433,23 +433,3 @@ infra:
     authToken: ${ADMIN_TOKEN}
   metrics:
     enabled: true
-
-# ── 控制面板 ──────────────────────────────────────────────
-# 本地可视化面板（http://127.0.0.1:3000/panel）：监控 + 启停各组件。
-# 这些路径只在面板「启动/停止」按钮里用，主程序本身不依赖它们。
-control:
-  tts:
-    # GPT-SoVITS 的 venv python 与入口脚本
-    python: D:/Agent/HarnessWorkPlace/Deepseek/tts-env/venv/Scripts/python.exe
-    script: D:/Agent/HarnessWorkPlace/Deepseek/gpt-sovits/tts_server.py
-    workdir: D:/Agent/HarnessWorkPlace/Deepseek/gpt-sovits
-    port: 9880
-  lagrange:
-    # 协议端可执行文件与其工作目录（publish 目录）
-    exe: D:/Agent/HarnessWorkPlace/Deepseek/lagrange/Lagrange.OneBot/bin/Release/net9.0/win-x64/publish/Lagrange.OneBot.exe
-    workdir: D:/Agent/HarnessWorkPlace/Deepseek/lagrange/Lagrange.OneBot/bin/Release/net9.0/win-x64/publish
-    # 自包含 .NET 解压目录，避免每次解压到临时目录
-    bundleExtractBase: D:/Agent/HarnessWorkPlace/Deepseek/lagrange/dotnet-tmp
-  signServer:
-    container: ntqq-sign-server
-    port: 8090

@@ -12,7 +12,7 @@
         "messagePostFormat": "array",
         "reportSelfMessage": false,
         "reconnectInterval": 5000,
-        "token": "<替换成与 .env 里 ONEBOT_ACCESS_TOKEN 相同的值>",
+        "token": "ZN07zkuSCj3f4t4nFcd40ddHIPdo8mz",
         "debug": false,
         "heartInterval": 30000
       }
